@@ -23,6 +23,70 @@
 #include "il/OMROpcodes.enum"
 
 OPCODE_MACRO(\
+   /* .opcode               = */ possibleHeapification, \
+   /* .name                 = */ "possibleHeapification", \
+   /* .properties1          = */ ILProp1::HasSymbolRef, \
+   /* .properties2          = */ ILProp2::ValueNumberShare | ILProp2::MayUseSystemStack | ILProp2::CanRaiseException, \
+   /* .properties3          = */ ILProp3::LikeUse | ILProp3::LikeDef, \
+   /* .properties4          = */ 0, \
+   /* .dataType             = */ TR::Address, \
+   /* .typeProperties       = */ ILTypeProp::Reference, \
+   /* .childProperties      = */ ONE_CHILD(TR::Address), \
+   /* .swapChildrenOpCode   = */ TR::BadILOp, \
+   /* .reverseBranchOpCode  = */ TR::BadILOp, \
+   /* .booleanCompareOpCode = */ TR::BadILOp, \
+   /* .ifCompareOpCode      = */ TR::BadILOp, \
+   /* .description          =    Heapification of a stack object  */ \
+)
+OPCODE_MACRO(\
+   /* .opcode               = */ possibleHeapificationAtReturn, \
+   /* .name                 = */ "possibleHeapificationAtReturn", \
+   /* .properties1          = */ ILProp1::HasSymbolRef | ILProp1::TreeTop, \
+   /* .properties2          = */ ILProp2::ValueNumberShare | ILProp2::MayUseSystemStack | ILProp2::CanRaiseException, \
+   /* .properties3          = */ ILProp3::LikeUse | ILProp3::LikeDef, \
+   /* .properties4          = */ 0, \
+   /* .dataType             = */ TR::Address, \
+   /* .typeProperties       = */ ILTypeProp::Reference, \
+   /* .childProperties      = */ TWO_CHILD(TR::Address, TR::Address), \
+   /* .swapChildrenOpCode   = */ TR::BadILOp, \
+   /* .reverseBranchOpCode  = */ TR::BadILOp, \
+   /* .booleanCompareOpCode = */ TR::BadILOp, \
+   /* .ifCompareOpCode      = */ TR::BadILOp, \
+   /* .description          =    Heapification of a stack object  */ \
+)
+OPCODE_MACRO(\
+   /* .opcode               = */ possibleHeapificationAtStore, \
+   /* .name                 = */ "possibleHeapificationAtStore", \
+   /* .properties1          = */ ILProp1::HasSymbolRef | ILProp1::TreeTop, \
+   /* .properties2          = */ ILProp2::ValueNumberShare | ILProp2::MayUseSystemStack | ILProp2::CanRaiseException, \
+   /* .properties3          = */ ILProp3::LikeUse | ILProp3::LikeDef, \
+   /* .properties4          = */ 0, \
+   /* .dataType             = */ TR::Address, \
+   /* .typeProperties       = */ ILTypeProp::Reference, \
+   /* .childProperties      = */ TWO_CHILD(TR::Address, TR::Address), \
+   /* .swapChildrenOpCode   = */ TR::BadILOp, \
+   /* .reverseBranchOpCode  = */ TR::BadILOp, \
+   /* .booleanCompareOpCode = */ TR::BadILOp, \
+   /* .ifCompareOpCode      = */ TR::BadILOp, \
+   /* .description          =    Heapification of a stack object  */ \
+)
+OPCODE_MACRO(\
+   /* .opcode               = */ loadHeapifiableAddr, \
+   /* .name                 = */ "loadHeapifiableAddr", \
+   /* .properties1          = */ ILProp1::HasSymbolRef, \
+   /* .properties2          = */ ILProp2::ValueNumberShare | ILProp2::MayUseSystemStack, \
+   /* .properties3          = */ ILProp3::LikeUse, \
+   /* .properties4          = */ 0, \
+   /* .dataType             = */ TR::Address, \
+   /* .typeProperties       = */ ILTypeProp::Reference, \
+   /* .childProperties      = */ ILChildProp::NoChildren, \
+   /* .swapChildrenOpCode   = */ TR::BadILOp, \
+   /* .reverseBranchOpCode  = */ TR::BadILOp, \
+   /* .booleanCompareOpCode = */ TR::BadILOp, \
+   /* .ifCompareOpCode      = */ TR::BadILOp, \
+   /* .description          =    load address of local object which could later escape and be moved to the heap */ \
+)
+OPCODE_MACRO(\
    /* .opcode               = */ zdload, \
    /* .name                 = */ "zdload", \
    /* .properties1          = */ ILProp1::LoadVar | ILProp1::HasSymbolRef, \

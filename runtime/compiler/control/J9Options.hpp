@@ -37,6 +37,9 @@ namespace J9 { typedef J9::Options OptionsConnector; }
 #include <stdint.h>
 #include "control/OptionsUtil.hpp"
 #include "env/jittypes.h"
+#include <unordered_map>
+#include <vector>
+
 #if defined(J9VM_OPT_JITSERVER)
 namespace TR { class CompilationInfo; }
 namespace TR { class CompilationInfoPerThreadBase; }
@@ -493,6 +496,8 @@ class OMR_EXTENSIBLE Options : public OMR::OptionsConnector
 
    static bool _aggressiveLockReservation;
 
+   static int32_t _soThreshold;
+
    static bool _xrsSync;
 
    static ExternalOptionsMetadata _externalOptionsMetadata[ExternalOptions::TR_NumExternalOptions];
@@ -534,7 +539,29 @@ class OMR_EXTENSIBLE Options : public OMR::OptionsConnector
       { return _externalOptionsMetadata[option]._match; }
 
    static void  printPID();
-
+      
+   // 4th with SPECOPT, Inline and Branch
+   static std::unordered_map< 
+    std::string,
+    std::pair<
+        std::vector<int32_t>, // First part: list of integers
+        std::pair<
+         std::unordered_map<
+            int32_t, // Second part key (e.g., 29)
+            std::vector< // Holds a list of pairs
+                std::pair<
+                    std::vector<std::string>, // List of strings (e.g., SpecOpt Child)
+                    std::vector<int32_t> // List of integers (e.g., [54, 70, 114, 130, 170, 185])
+                >
+            >
+         >,
+        std::pair <
+                std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>>, // Third part: Independent Inlining Result map
+                std::vector<std::tuple<std::vector<int32_t>, std::string, std::vector<int32_t>>> // Fourth part: List of (double, string, vector<int32_t>)
+            >
+        >
+      >
+   > _staticAnalysisNonEscapingMap;
 
 
 
@@ -549,7 +576,7 @@ class OMR_EXTENSIBLE Options : public OMR::OptionsConnector
    static const char *loadLimitOption(const char *option, void *, TR::OptionTable *entry);
 
    static const char *loadLimitfileOption(const char *option, void *, TR::OptionTable *entry);
-
+   
 #if defined(J9VM_OPT_JITSERVER)
    static const char *JITServerAOTCacheStoreLimitOption(const char *option, void *, TR::OptionTable *entry);
    static const char *JITServerAOTCacheLoadLimitOption(const char *option, void *, TR::OptionTable *entry);
@@ -568,6 +595,7 @@ class OMR_EXTENSIBLE Options : public OMR::OptionsConnector
    static const char *limitOption(const char *option, void *, TR::OptionTable *entry);
    static const char *inlinefileOption(const char *option, void *, TR::OptionTable *entry);
    static const char *limitfileOption(const char *option, void *, TR::OptionTable *entry);
+   static const char *eaResfileOption(const char *option, void *, TR::OptionTable *entry);
    static const char *versionOption(const char *option, void *, TR::OptionTable *entry);
 
    /** \brief

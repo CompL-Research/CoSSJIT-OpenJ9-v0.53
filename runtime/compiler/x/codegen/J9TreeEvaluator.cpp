@@ -1425,6 +1425,15 @@ TR::Register *J9::X86::TreeEvaluator::asynccheckEvaluator(TR::Node *node, TR::Co
 //
 TR::Register *J9::X86::TreeEvaluator::newEvaluator(TR::Node *node, TR::CodeGenerator *cg)
    {
+   const char *allocationMethodSignature = cg->comp()->signature();
+   if (!node->getByteCodeInfo().isInvalidCallerIndex())
+   {
+      TR_InlinedCallSite & ics = cg->comp()->getInlinedCallSite(node->getByteCodeInfo().getCallerIndex());
+      allocationMethodSignature = cg->comp()->compileRelocatableCode() ?
+                 (((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(cg->comp()->trMemory(), heapAlloc)) :
+                 (cg->fe()->sampleSignature(ics._methodInfo, 0, 0, cg->comp()->trMemory()));
+   }
+   cg->generateDebugCounter(NULL, TR::DebugCounter::debugCounterName(cg->comp(), "AllocationStatistics/Heap"/*, allocationMethodSignature, node->getByteCodeIndex() */ ));
    TR::Compilation *comp = cg->comp();
    TR::Register *targetRegister = NULL;
 
@@ -13984,3 +13993,202 @@ TR::Register *J9::X86::TreeEvaluator::awrtbarEvaluator(TR::Node *node, TR::CodeG
    // counts of the children evaluated here and let this helper handle it.
    return TR::TreeEvaluator::writeBarrierEvaluator(node, cg);
    }
+
+TR::Register *J9::X86::TreeEvaluator::loadHeapifiableAddrEvaluator(TR::Node *node, TR::CodeGenerator *cg)
+{
+   return loadaddrEvaluator(node, cg);
+}
+
+TR::Register *J9::X86::TreeEvaluator::possibleHeapificationEvaluator(TR::Node *node, TR::CodeGenerator *cg)
+{
+   TR::Node *valueNode = node->getFirstChild();
+   TR::Register *valueReg = cg->evaluate(valueNode);
+   TR_X86ScratchRegisterManager *scratchRegisterManager = cg->generateScratchRegisterManager(cg->comp()->target().is64Bit() ? 15 : 7);
+   TR::LabelSymbol *heapificationCheckLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationDoneIfRequiredLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationLabel = generateLabelSymbol(cg);
+
+   heapificationCheckLabel->setStartInternalControlFlow();
+   heapificationDoneIfRequiredLabel->setEndInternalControlFlow();
+
+   TR::Register *stackBaseReg = scratchRegisterManager->findOrCreateScratchRegister();
+   TR::MemoryReference *stackBaseMR =
+      generateX86MemoryReference(cg->getVMThreadRegister(), offsetof(J9VMThread, stackObject), cg);
+   generateRegMemInstruction(TR::InstOpCode::LRegMem(), node, stackBaseReg, stackBaseMR, cg);
+   TR::MemoryReference *stackEndMR =
+      generateX86MemoryReference(stackBaseReg, offsetof(J9JavaStack, end), cg);
+
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationCheckLabel, cg);
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, stackBaseReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JB4, node, heapificationDoneIfRequiredLabel, cg);
+   generateRegMemInstruction(TR::InstOpCode::CMPRegMem(), node, valueReg, stackEndMR, cg);
+   TR::Instruction *startInstruction = generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationDoneIfRequiredLabel, cg);
+
+   cg->generateDebugCounter(startInstruction, TR::DebugCounter::debugCounterName(cg->comp(), "Heapification/StoreOrUnsafe"));
+
+   TR::Node *helperCallNode = TR::Node::createWithSymRef(TR::acall, 1, 1, valueNode, node->getSymbolReference());
+   helperCallNode->copyByteCodeInfo(node);
+
+   TR_OutlinedInstructions *outlinedHeapificationHelperCall =
+         new (cg->trHeapMemory()) TR_OutlinedInstructions(helperCallNode, TR::acall, NULL, heapificationLabel, heapificationDoneIfRequiredLabel, cg);
+   cg->getOutlinedInstructionsList().push_front(outlinedHeapificationHelperCall);
+
+   generateLabelInstruction(TR::InstOpCode::JMP4, node, heapificationLabel, cg);
+
+   TR::RegisterDependencyConditions  *deps = new (cg->trHeapMemory()) TR::RegisterDependencyConditions((uint8_t)0, TR::RealRegister::NumRegisters, cg->trMemory());
+   deps->addPostCondition(valueReg, TR::RealRegister::NoReg, cg);
+   deps->addPostCondition(cg->getVMThreadRegister(), TR::RealRegister::NoReg, cg);
+   scratchRegisterManager->addScratchRegistersToDependencyList(deps);
+   deps->stopAddingPostConditions();
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationDoneIfRequiredLabel, deps, cg);
+
+   scratchRegisterManager->stopUsingRegisters();
+   node->unsetRegister();
+   return NULL;
+}
+
+TR::Register *J9::X86::TreeEvaluator::possibleHeapificationAtReturnEvaluator(TR::Node *node, TR::CodeGenerator *cg)
+{
+   TR::Node *valueNode = node->getFirstChild();
+   TR::Node *comparisonChild = node->getSecondChild();
+   TR::Register *valueReg = cg->evaluate(valueNode);
+   TR::Register *comparisonReg = cg->evaluate(comparisonChild);
+   TR_X86ScratchRegisterManager *scratchRegisterManager = cg->generateScratchRegisterManager(cg->comp()->target().is64Bit() ? 15 : 7);
+   TR::LabelSymbol *heapificationCheckLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationRequiredLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationDoneIfRequiredLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationLabel = generateLabelSymbol(cg);
+
+   heapificationCheckLabel->setStartInternalControlFlow();
+   heapificationDoneIfRequiredLabel->setEndInternalControlFlow();
+
+   TR::Register *stackBaseReg = scratchRegisterManager->findOrCreateScratchRegister();
+   TR::Register *stackEndReg = scratchRegisterManager->findOrCreateScratchRegister();
+   TR::MemoryReference *stackBaseMR =
+      generateX86MemoryReference(cg->getVMThreadRegister(), offsetof(J9VMThread, stackObject), cg);
+   generateRegMemInstruction(TR::InstOpCode::LRegMem(), node, stackBaseReg, stackBaseMR, cg);
+   TR::MemoryReference *stackEndMR =
+      generateX86MemoryReference(stackBaseReg, offsetof(J9JavaStack, end), cg);
+   generateRegMemInstruction(TR::InstOpCode::LRegMem(), node, stackEndReg, stackEndMR, cg);
+   // NOTE: https://github.com/eclipse/omr/blob/8021d572513b5faf285991625c324c66683c0c21/compiler/x/codegen/OMRMemoryReference.cpp#L895
+
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationCheckLabel, cg);
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, stackBaseReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JB4, node, heapificationDoneIfRequiredLabel, cg);
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, stackEndReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationDoneIfRequiredLabel, cg);
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, comparisonReg, stackBaseReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JB4, node, heapificationLabel, cg);
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, comparisonReg, stackEndReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationLabel, cg);
+   // The object we are comparing against could have been heapified before this return, 
+   // Now we don't have anything to know stack boundary, so just heapify 
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, comparisonReg, cg);
+   // JA instead of JAE because we might be heapifying the first object itself
+   generateLabelInstruction(TR::InstOpCode::JA4, node, heapificationDoneIfRequiredLabel, cg);
+
+   TR::Instruction *startInstruction = generateLabelInstruction(TR::InstOpCode::label, node, heapificationRequiredLabel, cg);
+
+   cg->generateDebugCounter(startInstruction, TR::DebugCounter::debugCounterName(cg->comp(), "Heapification/Return"));
+
+   TR::Node *helperCallNode = TR::Node::createWithSymRef(TR::acall, 1, 1, valueNode, node->getSymbolReference());
+   helperCallNode->copyByteCodeInfo(node);
+
+   TR_OutlinedInstructions *outlinedHeapificationHelperCall =
+         new (cg->trHeapMemory()) TR_OutlinedInstructions(helperCallNode, TR::acall, NULL, heapificationLabel, heapificationDoneIfRequiredLabel, cg);
+   cg->getOutlinedInstructionsList().push_front(outlinedHeapificationHelperCall);
+
+   generateLabelInstruction(TR::InstOpCode::JMP4, node, heapificationLabel, cg);
+   
+   TR::RegisterDependencyConditions  *deps = new (cg->trHeapMemory()) TR::RegisterDependencyConditions((uint8_t)0, TR::RealRegister::NumRegisters, cg->trMemory());
+   deps->addPostCondition(valueReg, TR::RealRegister::NoReg, cg);
+   deps->addPostCondition(comparisonReg, TR::RealRegister::NoReg, cg);
+   deps->addPostCondition(cg->getVMThreadRegister(), TR::RealRegister::NoReg, cg);
+   scratchRegisterManager->addScratchRegistersToDependencyList(deps);
+   deps->stopAddingPostConditions();
+
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationDoneIfRequiredLabel, deps, cg);
+   scratchRegisterManager->stopUsingRegisters();
+   node->unsetRegister();
+   return NULL;
+}
+
+TR::Register *J9::X86::TreeEvaluator::possibleHeapificationAtStoreEvaluator(TR::Node *node, TR::CodeGenerator *cg)
+{
+   TR::Node *valueNode = node->getFirstChild();
+   TR::Node *destChild = node->getSecondChild();
+   TR::Register *valueReg = cg->evaluate(valueNode);
+   TR::Register *destReg = cg->evaluate(destChild);
+   TR_X86ScratchRegisterManager *scratchRegisterManager = cg->generateScratchRegisterManager(cg->comp()->target().is64Bit() ? 15 : 7);
+   TR::LabelSymbol *heapificationCheckLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationRequiredLabel = generateLabelSymbol(cg);
+   TR::LabelSymbol *heapificationDoneIfRequiredLabel = generateLabelSymbol(cg);
+
+   heapificationCheckLabel->setStartInternalControlFlow();
+   heapificationDoneIfRequiredLabel->setEndInternalControlFlow();
+
+   TR::Register *stackBaseReg = scratchRegisterManager->findOrCreateScratchRegister();
+   TR::Register *stackEndReg = scratchRegisterManager->findOrCreateScratchRegister();
+   TR::MemoryReference *stackBaseMR =
+      generateX86MemoryReference(cg->getVMThreadRegister(), offsetof(J9VMThread, stackObject), cg);
+   generateRegMemInstruction(TR::InstOpCode::LRegMem(), node, stackBaseReg, stackBaseMR, cg);
+   TR::MemoryReference *stackEndMR =
+      generateX86MemoryReference(stackBaseReg, offsetof(J9JavaStack, end), cg);
+   generateRegMemInstruction(TR::InstOpCode::LRegMem(), node, stackEndReg, stackEndMR, cg);
+   // NOTE: https://github.com/eclipse/omr/blob/8021d572513b5faf285991625c324c66683c0c21/compiler/x/codegen/OMRMemoryReference.cpp#L895
+
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationCheckLabel, cg);
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, stackBaseReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JB4, node, heapificationDoneIfRequiredLabel, cg); // value < stackBase -> don't heapify
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, stackEndReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationDoneIfRequiredLabel, cg); // value >= stackEnd -> don't heapify
+
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, destReg, stackBaseReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JB4, node, heapificationRequiredLabel, cg); // dest < stackBase -> requires heapification
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, destReg, stackEndReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationRequiredLabel, cg); // dest > stackEnd -> requires heapification
+
+   // If we have reached here, both dest and value are on stack
+
+   generateRegRegInstruction(TR::InstOpCode::CMPRegReg(), node, valueReg, destReg, cg);
+   generateLabelInstruction(TR::InstOpCode::JAE4, node, heapificationDoneIfRequiredLabel, cg); 
+   // if value>=dest, no escape since value is on a stack frame that will be popped later than dest
+
+   TR::Instruction *startInstruction = generateLabelInstruction(TR::InstOpCode::label, node, heapificationRequiredLabel, cg);
+   
+   cg->generateDebugCounter(startInstruction, TR::DebugCounter::debugCounterName(cg->comp(), "Heapification/Store"));
+   
+   TR::Node *helperCallNode = TR::Node::createWithSymRef(TR::acall, 2, 2, destChild, valueNode, node->getSymbolReference());
+   cg->evaluate(helperCallNode);
+   helperCallNode->unsetRegister();
+
+   TR::RegisterDependencyConditions  *deps = new (cg->trHeapMemory()) TR::RegisterDependencyConditions((uint8_t)0, TR::RealRegister::NumRegisters, cg->trMemory());
+   deps->addPostCondition(valueReg, TR::RealRegister::NoReg, cg);
+   deps->addPostCondition(destReg, TR::RealRegister::NoReg, cg);
+   deps->addPostCondition(cg->getVMThreadRegister(), TR::RealRegister::NoReg, cg);
+   scratchRegisterManager->addScratchRegistersToDependencyList(deps);
+   for (TR::Instruction *cursor = cg->getAppendInstruction(); cursor != startInstruction; cursor = cursor->getPrev())
+      {
+      TR::RegisterDependencyConditions  *cursorDeps = cursor->getDependencyConditions();
+      if (cursorDeps && cursor->getOpCodeValue() != TR::InstOpCode::assocreg)
+         {
+         for (int32_t i = 0; i < cursorDeps->getNumPostConditions(); i++)
+            {
+            TR::RegisterDependency  *cursorPostCondition = cursorDeps->getPostConditions()->getRegisterDependency(i);
+            deps->unionPostCondition(cursorPostCondition->getRegister(), cursorPostCondition->getRealRegister(), cg);
+            }
+         }
+      }
+   deps->stopAddingPostConditions();
+   generateLabelInstruction(TR::InstOpCode::label, node, heapificationDoneIfRequiredLabel, deps, cg);
+
+   scratchRegisterManager->stopUsingRegisters();
+   node->unsetRegister();
+   return NULL;
+}

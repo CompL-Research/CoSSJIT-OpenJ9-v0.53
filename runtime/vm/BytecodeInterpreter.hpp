@@ -4255,6 +4255,13 @@ done:
 	inlUnsafePutObject(REGISTER_ARGS_LIST, bool isVolatile)
 	{
 		VM_BytecodeAction rc = EXECUTE_BYTECODE;
+		j9object_t valueObj = *(j9object_t*)_sp;
+		// j9object_t destObj = *(j9object_t*)(_sp+3);
+		buildInternalNativeStackFrame(REGISTER_ARGS);
+		updateVMStruct(REGISTER_ARGS);
+		heapifyObjectIfRequired(REGISTER_ARGS, valueObj);
+		// newHeapifyObjectIfRequired(REGISTER_ARGS, valueObj, destObj);
+		restoreInternalNativeStackFrame(REGISTER_ARGS);
 		j9object_t *value = (j9object_t*)_sp;
 		UDATA offset = (UDATA)*(I_64*)(_sp + 1);
 		j9object_t obj = *(j9object_t*)(_sp + 3);
@@ -4377,6 +4384,11 @@ done:
 	inlUnsafeCompareAndSwapObject(REGISTER_ARGS_LIST)
 	{
 		VM_BytecodeAction rc = EXECUTE_BYTECODE;
+		j9object_t valueObj = *(j9object_t*)_sp;
+		buildInternalNativeStackFrame(REGISTER_ARGS);
+		updateVMStruct(REGISTER_ARGS);
+		heapifyObjectIfRequired(REGISTER_ARGS, valueObj);
+		restoreInternalNativeStackFrame(REGISTER_ARGS);
 		j9object_t *swapValue = (j9object_t*)_sp;
 		j9object_t *compareValue = (j9object_t*)(_sp + 1);
 		UDATA offset = (UDATA)*(I_64*)(_sp + 2);
@@ -7253,7 +7265,11 @@ done:
 				_currentThread->tempSlot = (UDATA)index;
 				rc = THROW_AIOB;
 			} else {
+				heapifyObjectIfRequired(REGISTER_ARGS, *(j9object_t*)_sp);
+				// newHeapifyObjectIfRequired(REGISTER_ARGS, *(j9object_t*)_sp, arrayref);
+				// Read object pointers again - heapification could have caused GC
 				j9object_t value = *(j9object_t*)_sp;
+				arrayref = *(j9object_t*)(_sp + 2);
 				/* Runtime check class compatibility */
 				if (false == VM_VMHelpers::objectArrayStoreAllowed(_currentThread, arrayref, value)) {
 					rc = THROW_ARRAY_STORE;
@@ -7719,6 +7735,61 @@ done:
 		return rc;
 	}
 
+	// VMINLINE void
+	// heapifyObjectIfRequired(REGISTER_ARGS_LIST, j9object_t original)
+	// {
+	// 	if ((UDATA)original < (UDATA)(_currentThread->stackObject) || (UDATA)original >= (UDATA)(_currentThread->stackObject->end))
+	// 		return;
+	// 	if (1) {
+	// 		printf("Interpreter heapification\n");
+	// 		fflush(stdout);
+	// 	}
+	// 	updateVMStruct(REGISTER_ARGS);
+	// 	// VM_VMHelpers::heapifyObject(_currentThread, original);
+	// 	VM_VMHelpers::heapifyObjectIfRequired(_currentThread, (j9object_t)-1, original);
+	// 	VMStructHasBeenUpdated(REGISTER_ARGS);
+	// }
+
+
+	VMINLINE void
+	heapifyObjectIfRequired(REGISTER_ARGS_LIST, j9object_t valueObj, j9object_t destObj = (j9object_t)-1)
+	{
+		if ((UDATA)valueObj < (UDATA)(_currentThread->stackObject) || (UDATA)valueObj >= (UDATA)(_currentThread->stackObject->end))
+			return;
+		
+		// printf("Interpreter heapification - updated check running\n");
+		// fflush(stdout);
+
+		// printf("srcObject addr:%lu, destObject addr:%lu, stackbase:%lu, stackend:%lu\n", (UDATA)valueObj, (UDATA)destObj, (UDATA)(_currentThread->stackObject),(UDATA)(_currentThread->stackObject->end));
+		// fflush(stdout);
+
+		if ((UDATA)destObj >= (UDATA)(_currentThread->stackObject) && (UDATA)destObj < (UDATA)(_currentThread->stackObject->end)) {
+			//destObj is in stack and valueObj is deeper on the stack and has more lifetime than destObj;
+			if((UDATA)valueObj >= (UDATA)destObj) {
+				// printf("Interpreter heapification - dest and val both on stack with value deeper on stack - heapification avoided\n");
+				return;
+			}
+			// else {
+			// 	printf("Interpreter heapification - dest and val both on stack but dest is deeper on stack - continue heapifying\n");
+			// 	fflush(stdout);
+			// }
+		}
+		// else {
+		// 	printf("Interpreter heapification - dest object is not on the stack\n");
+		// 	fflush(stdout);
+		// }
+
+		// if (1) {
+		// 	printf("Interpreter heapification happening\n");
+		// 	fflush(stdout);
+		// }
+		updateVMStruct(REGISTER_ARGS);
+		VM_VMHelpers::heapifyObjectIfRequired(_currentThread, valueObj, destObj);
+		VMStructHasBeenUpdated(REGISTER_ARGS);
+	}
+
+
+
 	/* ..., <1 or 2 slot value> => ... */
 	VMINLINE VM_BytecodeAction
 	putstatic(REGISTER_ARGS_LIST)
@@ -7789,6 +7860,7 @@ done:
 			bool isVolatile = (0 != (classAndFlags & J9StaticFieldRefVolatile));
 			switch(classAndFlags & J9StaticFieldRefTypeMask) {
 			case J9StaticFieldRefTypeObject:
+				heapifyObjectIfRequired(REGISTER_ARGS, *(j9object_t*)_sp);
 				_objectAccessBarrier.inlineStaticStoreObject(_currentThread, fieldClass, (j9object_t*)valueAddress, *(j9object_t*)_sp, isVolatile);
 				_sp += 1;
 				break;
@@ -7989,6 +8061,8 @@ done:
 				_objectAccessBarrier.inlineMixedObjectStoreU64(_currentThread, objectref, newValueOffset, *(U_64*)_sp, isVolatile);
 				_sp += 3;
 			} else if (flags & J9FieldFlagObject) {
+				// heapifyObjectIfRequired(REGISTER_ARGS, *(j9object_t*)_sp);
+				heapifyObjectIfRequired(REGISTER_ARGS, *(j9object_t*)_sp, *(j9object_t*)(_sp + 1));
 				j9object_t objectref = *(j9object_t*)(_sp + 1);
 				if (NULL == objectref) {
 					rc = THROW_NPE;
@@ -8047,6 +8121,8 @@ done:
 	{
 		VM_BytecodeAction rc = GOTO_THROW_CURRENT_EXCEPTION;
 		j9object_t objectref = *(j9object_t*)_sp;
+		heapifyObjectIfRequired(REGISTER_ARGS, objectref);
+		objectref = *(j9object_t*)_sp;
 		_sp += 1;
 		if (J9_UNEXPECTED(NULL == objectref)) {
 			rc = THROW_NPE;

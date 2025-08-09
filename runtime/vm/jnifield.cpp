@@ -687,6 +687,15 @@ setObjectField(JNIEnv *env, jobject obj, jfieldID fieldID, jobject valueRef)
 
 	j9object_t object = J9_JNI_UNWRAP_REFERENCE(obj);
 	j9object_t value = (NULL == valueRef) ? NULL : J9_JNI_UNWRAP_REFERENCE(valueRef);
+	if ((UDATA)value > (UDATA)(currentThread->stackObject) && (UDATA)value <= (UDATA)(currentThread->stackObject->end)) {
+		if (1) {
+			printf("JNI heapification\n");
+			fflush(stdout);
+		}
+		value = (j9object_t)(VM_VMHelpers::heapifyObjectIfRequired(currentThread, value));
+		// Re-read values - GC could have taken place
+		object = J9_JNI_UNWRAP_REFERENCE(obj);
+	}
 	valueOffset += J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread);
 	J9OBJECT_OBJECT_STORE(currentThread, object, valueOffset, value);
 
@@ -899,6 +908,13 @@ setStaticObjectField(JNIEnv *env, jclass clazz, jfieldID fieldID, jobject value)
 	bool isVolatile = J9_ARE_ANY_BITS_SET(modifiers, J9AccVolatile);
 	MM_ObjectAccessBarrierAPI objectAccessBarrier(currentThread);
 	j9object_t valueObject = (NULL == value) ? NULL : J9_JNI_UNWRAP_REFERENCE(value);
+	if ((UDATA)valueObject > (UDATA)(currentThread->stackObject) && (UDATA)valueObject <= (UDATA)(currentThread->stackObject->end)) {
+		if (1) {
+			printf("JNI heapification\n");
+			fflush(stdout);
+		}
+		valueObject = (j9object_t)(VM_VMHelpers::heapifyObjectIfRequired(currentThread, valueObject));
+	}
 	objectAccessBarrier.inlineStaticStoreObject(currentThread, declaringClass, (j9object_t*)valueAddress, valueObject, isVolatile);
 	VM_VMAccess::inlineExitVMToJNI(currentThread);
 }
@@ -983,6 +999,16 @@ setObjectArrayElement(JNIEnv *env, jobjectArray arrayRef, jsize index, jobject v
 		}
 	}
 
+	if ((UDATA)value > (UDATA)(currentThread->stackObject) && (UDATA)value <= (UDATA)(currentThread->stackObject->end)) {
+		if (1) {
+			printf("JNI heapification\n");
+			fflush(stdout);
+		}
+		value = (j9object_t)(VM_VMHelpers::heapifyObjectIfRequired(currentThread, value));
+		// Re-read value, GC could have taken place
+		array = (j9array_t)J9_JNI_UNWRAP_REFERENCE(arrayRef);
+	}
+	
 	J9JAVAARRAYOFOBJECT_STORE(currentThread, array, index, value);
 
 done:

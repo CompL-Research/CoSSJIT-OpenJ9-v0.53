@@ -4222,6 +4222,18 @@ break
          callNode->getByteCodeInfo().setIsSameReceiver(1);
          }
       }
+   switch(symbol->getRecognizedMethod())
+   {
+      case TR::sun_misc_Unsafe_compareAndSwapObject_jlObjectJjlObjectjlObject_Z:
+      case TR::sun_misc_Unsafe_putObject_jlObjectJjlObject_V:
+      case TR::sun_misc_Unsafe_putObjectOrdered_jlObjectJjlObject_V:
+      case TR::sun_misc_Unsafe_putObjectVolatile_jlObjectJjlObject_V:
+         {
+            TR::Node *heapificationNode = TR::Node::createWithSymRef(TR::possibleHeapification, 1, 1, callNode->getLastChild(), symRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObject, true, true, true));
+            genTreeTop(heapificationNode);
+         }
+      default: break;
+   }
 
    if (cg()->getSupportsInlineStringCaseConversion() &&
          (symbol->getRecognizedMethod() == TR::com_ibm_jit_JITHelpers_toUpperIntrinsicLatin1 ||
@@ -6681,6 +6693,10 @@ TR_J9ByteCodeIlGenerator::storeInstance(TR::SymbolReference * symRef)
    // code to handle volatiles moved to CodeGenPrep
    //
    TR::Node * node;
+   if (type == TR::Address) {
+      TR::Node *heapificationNode = TR::Node::createWithSymRef(TR::possibleHeapificationAtStore, 2, 2, value, addressNode, symRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObjectIfRequired, true, true, true));
+      genTreeTop(heapificationNode);
+   }
    if ((type == TR::Address && _generateWriteBarriersForGC) || _generateWriteBarriersForFieldWatch)
       {
       node = TR::Node::createWithSymRef(comp()->il.opCodeForIndirectWriteBarrier(type), 3, 3, addressNode, value, parentObject, symRef);
@@ -6973,6 +6989,10 @@ TR_J9ByteCodeIlGenerator::storeStatic(int32_t cpIndex)
 
    if (type.isIntegral())
       value = narrowIntStoreIfRequired(value, symRef);
+   
+   if (type == TR::Address) {
+      TR::Node *heapificationNode = TR::Node::createWithSymRef(TR::possibleHeapification, 1, 1, value, symRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObject, true, true, true));
+      genTreeTop(heapificationNode);
 
    if ((type == TR::Address && _generateWriteBarriersForGC) || _generateWriteBarriersForFieldWatch)
       {
@@ -7036,7 +7056,7 @@ TR_J9ByteCodeIlGenerator::storeStatic(int32_t cpIndex)
 
    genTreeTop(node);
    }
-
+}
 void
 TR_J9ByteCodeIlGenerator::storeDualAuto(TR::Node * storeValue, int32_t slot)
    {
@@ -7217,6 +7237,8 @@ TR_J9ByteCodeIlGenerator::storeArrayElement(TR::DataType dataType, TR::ILOpCodes
    TR::Node * storeNode, * resultNode;
    if (generateWriteBarrier)
       {
+      TR::Node *heapificationNode = TR::Node::createWithSymRef(TR::possibleHeapificationAtStore, 2, 2, value, arrayBaseAddress, symRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObjectIfRequired, true, true, true));
+      genTreeTop(heapificationNode);
       storeNode = resultNode = TR::Node::createWithSymRef(TR::awrtbari, 3, 3, elementAddress, value, arrayBaseAddress, symRef);
       usedArrayBaseAddress = true;
       }
@@ -7442,6 +7464,8 @@ int32_t
 TR_J9ByteCodeIlGenerator::genAThrow()
    {
    TR::Node * node = TR::Node::createWithSymRef(TR::athrow, 1, 1, pop(), symRefTab()->findOrCreateAThrowSymbolRef(_methodSymbol));
+   TR::Node *heapificationNode = TR::Node::createWithSymRef(TR::possibleHeapification, 1, 1, node->getFirstChild(), symRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObject, true, true, true));
+   genTreeTop(heapificationNode);
 
    bool canSkipNullCheck = node->getFirstChild()->isNonNull();
    if (!canSkipNullCheck && _classInfo)

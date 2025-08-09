@@ -3961,6 +3961,72 @@ restore:
 	return addr;
 }
 
+void* J9FASTCALL
+old_slow_jitHeapifyStackObject(J9VMThread *currentThread)
+{
+	OLD_SLOW_ONLY_JIT_HELPER_PROLOGUE(1);
+	DECLARE_JIT_PARM(j9object_t, srcAddress, 1);
+	void *addr=NULL;
+	void *oldPC = buildJITResolveFrameForRuntimeHelper(currentThread, parmCount);
+	// if (1) {
+	// 	printf("JIT heapification\n");
+	// 	fflush(stdout);
+	// }
+	// Print the method name getting executed currently
+	J9StackWalkState *walkState = currentThread->stackWalkState;
+	walkState->walkThread = currentThread;
+	walkState->skipCount = 0;
+	walkState->flags = J9_STACKWALK_VISIBLE_ONLY | J9_STACKWALK_COUNT_SPECIFIED;
+	walkState->maxFrames = 1;
+	currentThread->javaVM->walkStackFrames(currentThread, walkState);
+	J9Method *currentMethod = walkState->method;
+	J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
+	J9UTF8 *methodSig = J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
+	printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
+	fflush(stdout);
+	// JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, (j9object_t)-1, srcAddress));
+	
+	JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, srcAddress));
+	addr = restoreJITResolveFrame(currentThread, oldPC);
+	SLOW_JIT_HELPER_EPILOGUE();
+	return addr;
+}
+
+void* J9FASTCALL
+old_slow_jitHeapifyStackObjectIfRequired(J9VMThread *currentThread)
+{
+	OLD_SLOW_ONLY_JIT_HELPER_PROLOGUE(2);
+	DECLARE_JIT_PARM(j9object_t, srcAddress, 1); //Maybe inverted
+	DECLARE_JIT_PARM(j9object_t, destAddress, 2);
+	void *addr=NULL;
+	void *oldPC = buildJITResolveFrameForRuntimeHelper(currentThread, parmCount);
+	
+	// if (1) {
+	// 	printf("JIT heapification new fn\n");
+	// 	fflush(stdout);
+	// }
+
+	// Print the method name getting executed currently
+	J9StackWalkState *walkState = currentThread->stackWalkState;
+	walkState->walkThread = currentThread;
+	walkState->skipCount = 0;
+	walkState->flags = J9_STACKWALK_VISIBLE_ONLY | J9_STACKWALK_COUNT_SPECIFIED;
+	walkState->maxFrames = 1;
+	currentThread->javaVM->walkStackFrames(currentThread, walkState);
+	J9Method *currentMethod = walkState->method;
+	J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
+	J9UTF8 *methodSig = J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
+	printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
+	fflush(stdout);
+
+	// JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, destAddress, srcAddress));
+	JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, srcAddress, destAddress));
+
+	addr = restoreJITResolveFrame(currentThread, oldPC);
+	SLOW_JIT_HELPER_EPILOGUE();
+	return addr;
+}
+
 void
 initPureCFunctionTable(J9JavaVM *vm)
 {
@@ -4125,6 +4191,8 @@ initPureCFunctionTable(J9JavaVM *vm)
 	jitConfig->old_slow_jitReportInstanceFieldWrite = (void*)old_slow_jitReportInstanceFieldWrite;
 	jitConfig->old_slow_jitReportStaticFieldRead = (void*)old_slow_jitReportStaticFieldRead;
 	jitConfig->old_slow_jitReportStaticFieldWrite = (void*)old_slow_jitReportStaticFieldWrite;
+	jitConfig->old_slow_jitHeapifyStackObject = (void*)old_slow_jitHeapifyStackObject;
+	jitConfig->old_slow_jitHeapifyStackObjectIfRequired = (void*)old_slow_jitHeapifyStackObjectIfRequired;
 }
 
 } /* extern "C" */

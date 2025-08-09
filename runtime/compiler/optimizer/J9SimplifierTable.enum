@@ -119,6 +119,10 @@
 #define countDigitsSimplifierHandler dftSimplifier
 #define BCDCHKSimplifierHandler dftSimplifier
 #define zdchkSimplifierHandler dftSimplifier
+#define loadHeapifiableAddrSimplifierHandler dftSimplifier
+#define possibleHeapificationSimplifierHandler dftSimplifier
+#define possibleHeapificationAtReturnSimplifierHandler dftSimplifier
+#define possibleHeapificationAtStoreSimplifierHandler dftSimplifier
 
 #include "optimizer/OMRSimplifierTable.enum"
 

@@ -145,6 +145,10 @@ class Candidate : public TR_Link<Candidate>
         _callSites(c->trMemory()),
         _dememoizedMethodSymRef(NULL),
         _dememoizedConstructorCall(NULL),
+        _optimisticallyNonEscaping(false),
+        _optimisticallyNonEscapinginlining(false),
+        _optimisticallyNonEscapingconditional(false),
+        _optimisticallyNonEscapingconditionalbranch(false),
     	_virtualCallSitesToBeFixed(c->trMemory()),
         _coldBlockEscapeInfo(c->trMemory())
          {
@@ -283,7 +287,10 @@ class Candidate : public TR_Link<Candidate>
      int32_t                 _inlineBytecodeSize;
      bool                    _seenFieldStore;
      bool                    _seenSelfStore;
-
+     bool                    _optimisticallyNonEscaping;
+     bool                    _optimisticallyNonEscapinginlining;
+     bool                    _optimisticallyNonEscapingconditional;
+     bool                    _optimisticallyNonEscapingconditionalbranch;
      bool                    _seenStoreToLocalObject;
      bool                    _seenArrayCopy;
      bool                    _argToCall;
@@ -507,6 +514,10 @@ class TR_EscapeAnalysis : public TR::Optimization
    virtual int32_t perform();
    virtual const char * optDetailString() const throw();
 
+   std::vector<int32_t> accumulatedBCIs;
+   std::vector<int32_t> branchaccumulatedBCIs;
+   std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> _inlining_result; 
+
    /**
     * Indicates whether stack allocation of \c newvalue operations may be
     * performed.  If the value is set to \c true, \c newvalue operations
@@ -520,7 +531,9 @@ class TR_EscapeAnalysis : public TR::Optimization
    enum restrictionType { MakeNonLocal, MakeContiguous, MakeObjectReferenced };
 
    int32_t  performAnalysisOnce();
-   void     findCandidates();
+   void     reorderCandidates();
+   // void     findCandidates(int &possibleAllocations, int &withinRes);
+   void     findCandidates(int &possibleAllocations, int &withinRes, std::vector<int32_t> accumulatedBCIs);
    void     findIgnorableUses();
    void     markUsesAsIgnorable(TR::Node *node, TR::NodeChecklist& visited);
    void     findLocalObjectsValueNumbers();
@@ -613,6 +626,9 @@ class TR_EscapeAnalysis : public TR::Optimization
 
    bool     isEscapePointCold(Candidate *candidate, TR::Node *node);
    bool     checkIfEscapePointIsCold(Candidate *candidate, TR::Node *node);
+   bool     checkIfNonEscapingInStaticAnalysis(Candidate *candidate);
+   bool     checkIfNonEscapingInConditinalStaticAnalysis(Candidate *candidate, std::vector<int32_t> accumulatedBCIs);
+   bool     checkIfNonEscapingInConditinalBranchStaticAnalysis(Candidate *candidate);
    void     forceEscape(TR::Node *node, TR::Node *reason, bool forceFail = false);
    bool     restrictCandidates(TR::Node *node, TR::Node *reason, restrictionType);
    //void     referencedField(TR::Node *base, TR::Node *field, bool isStore, bool seenSelfStore = false);
@@ -732,6 +748,8 @@ class TR_EscapeAnalysis : public TR::Optimization
    TR_BitVector              *_visitedNodes;
    TR_BitVector              *_initializedHeapifiedTemps;
 
+   std::vector<int32_t> nonEscapingObjects;
+   std::vector<int32_t>  *_nonEscapingObjects; // Pointer to const vector
    CallLoadMap               *_callsToProtect;
 
    /**
@@ -767,6 +785,7 @@ class TR_EscapeAnalysis : public TR::Optimization
 
    TR::Block                  *_curBlock;
    TR::TreeTop                *_curTree;
+   TR::TreeTop                *_iter;
    int32_t                    _sniffDepth;
    int32_t                    _maxSniffDepth;
    int32_t                    _maxPassNumber;

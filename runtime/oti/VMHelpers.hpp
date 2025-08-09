@@ -44,6 +44,9 @@
 #include "ute.h"
 #include "AtomicSupport.hpp"
 #include "ObjectAllocationAPI.hpp"
+#include "ObjectAccessBarrierAPI.hpp"
+#include "stackwalk.h"
+#include <unordered_map>
 
 typedef enum {
 	J9_BCLOOP_SEND_TARGET_INITIAL_STATIC = 0,
@@ -1954,6 +1957,224 @@ exit:
 #endif /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
 		return result;
 	}
+
+static void
+	heapifyObjectFixOSlotIterator(J9VMThread *vmThread, J9StackWalkState *walkState, j9object_t *oSlotPointer, const void * stackLocation)
+	{
+		if (*oSlotPointer == (j9object_t)walkState->userData1) {
+			*oSlotPointer = (j9object_t)walkState->userData2;
+		}
+	}
+
+	static j9object_t cloneObject(J9VMThread *currentThread, j9object_t objectPtr, std::unordered_map<UDATA, UDATA> &heapificationRefMap) {
+		// printf("In cloneObject fn, objectPtr address:%lu\n", (UDATA)objectPtr);
+		if(heapificationRefMap.find((UDATA)objectPtr)!=heapificationRefMap.end()) {
+			// printf("objectPtr found in heapificationRefMap\n");
+			return (j9object_t)heapificationRefMap[(UDATA)objectPtr];
+		} else {
+			// printf("objectPtr NOT found in heapificationRefMap\n");
+			j9object_t clonedObject = (j9object_t)heapifyObject(currentThread, objectPtr, heapificationRefMap);
+			// printf("heapificationRefMap store in cloneObject, mapping stackaddr:%lu, heapaddr:%lu\n", (UDATA)objectPtr, (UDATA)clonedObject);
+			heapificationRefMap[(UDATA)objectPtr] = (UDATA)clonedObject;
+			return clonedObject;
+		}
+		// fflush(stdout);
+	}
+
+	static UDATA
+	heapifyObject(J9VMThread *currentThread, j9object_t object, std::unordered_map<UDATA, UDATA>& heapificationRefMap)
+	{
+		J9Class *objectClass = J9OBJECT_CLAZZ(currentThread, object);
+		UDATA classFlags = J9CLASS_FLAGS(objectClass);
+		j9object_t heapCopy = NULL;
+		MM_ObjectAllocationAPI allocationAPI(currentThread);
+		MM_ObjectAccessBarrierAPI objectAccessBarrierAPI(currentThread);
+		UDATA* stackOffset = CONVERT_TO_RELATIVE_STACK_OFFSET(currentThread, object);
+
+		if(heapificationRefMap.find((UDATA)object)!=heapificationRefMap.end()) {
+			// printf("Object already found in heapificationRefMap, so no heap copy made\n");
+			// fflush(stdout);
+			return heapificationRefMap[(UDATA)object];
+		}
+
+		// printf("Performing JIT Heapification\n");
+		// fflush(stdout);
+
+		if (classFlags & J9AccClassArray) {
+			U_32 size = J9INDEXABLEOBJECT_SIZE(currentThread, object);
+			heapCopy = VM_VMHelpers::inlineAllocateIndexableObject(currentThread, &allocationAPI, objectClass, size, false, false, false);
+			if (heapCopy == NULL) {
+				heapCopy = currentThread->javaVM->memoryManagerFunctions->J9AllocateIndexableObject(currentThread, objectClass, size, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+				if (J9_UNEXPECTED(NULL == heapCopy)) {
+					printf("NULL copy object arr");
+					fflush(stdout);
+					return 0;
+				}
+				objectClass = VM_VMHelpers::currentClass(objectClass);
+			}
+			object = (j9object_t)(CONVERT_FROM_RELATIVE_STACK_OFFSET(currentThread, stackOffset));
+			objectAccessBarrierAPI.cloneArray(currentThread, object, heapCopy, objectClass, size);
+		} else {
+			heapCopy = allocationAPI.inlineAllocateObject(currentThread, objectClass, false, false);
+			if (heapCopy == NULL) {
+				heapCopy = currentThread->javaVM->memoryManagerFunctions->J9AllocateObject(currentThread, objectClass, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+				if (J9_UNEXPECTED(NULL == heapCopy)) {
+					printf("NULL copy object");
+					fflush(stdout);
+					return 0; 
+				}
+				objectClass = VM_VMHelpers::currentClass(objectClass);
+			}
+			object = (j9object_t)(CONVERT_FROM_RELATIVE_STACK_OFFSET(currentThread, stackOffset));
+			objectAccessBarrierAPI.cloneObject(currentThread, object, heapCopy, objectClass);
+			VM_VMHelpers::checkIfFinalizeObject(currentThread, heapCopy);
+		}
+
+		object = (j9object_t)(CONVERT_FROM_RELATIVE_STACK_OFFSET(currentThread, stackOffset));
+
+		if (LN_HAS_LOCKWORD(currentThread, object)) {
+			j9objectmonitor_t *originalLockEA = J9OBJECT_MONITOR_EA(currentThread, object);
+			j9objectmonitor_t *newLockEA = J9OBJECT_MONITOR_EA(currentThread, heapCopy);
+			J9_STORE_LOCKWORD(currentThread, newLockEA, J9_LOAD_LOCKWORD(currentThread, originalLockEA));
+		}
+
+		// Clear the cache, as in RootScanner
+		// j9objectmonitor_t *objectMonitorLookupCache = currentThread->objectMonitorLookupCache;
+		// for (UDATA cacheIndex = 0; cacheIndex < J9VMTHREAD_OBJECT_MONITOR_CACHE_SIZE; cacheIndex++) {
+		// 	objectMonitorLookupCache[cacheIndex] = 0;
+		// }
+
+		// TODO: Fix monitor references, as in RootScanner
+
+		J9StackWalkState walkState;
+		walkState.walkThread = currentThread;
+		walkState.flags = J9_STACKWALK_ITERATE_O_SLOTS | J9_STACKWALK_DO_NOT_SNIFF_AND_WHACK;
+		walkState.objectSlotWalkFunction = heapifyObjectFixOSlotIterator;
+		walkState.userData1 = object;
+		walkState.userData2 = heapCopy;
+		currentThread->javaVM->walkStackFrames(currentThread, &walkState);
+
+		heapificationRefMap[(UDATA)object] = (UDATA)heapCopy;
+		// printf("heapificationRefMap store, mapping stackaddr:%lu, heapaddr:%lu\n", (UDATA)object, (UDATA)heapCopy);
+		// fflush(stdout);
+		
+		if(classFlags & J9AccClassArray) {
+			if (OBJECT_HEADER_SHAPE_POINTERS == J9CLASS_SHAPE(objectClass)) { 
+				//object is an array of objects
+				// printf("Trying to recursively heapify object array\n");
+				// fflush(stdout);
+				U_32 size = J9INDEXABLEOBJECT_SIZE(currentThread, heapCopy), index = 0;
+
+				while (index < size) {
+					j9object_t objectPtr = J9JAVAARRAYOFOBJECT_LOAD(currentThread, heapCopy, index); //Load object index
+					if(isObjectStackAllocated(currentThread, objectPtr)) {
+						j9object_t clonedObject = cloneObject(currentThread, objectPtr, heapificationRefMap);
+						J9JAVAARRAYOFOBJECT_STORE(currentThread, heapCopy, index, clonedObject);
+						// printf("Recursive heapification of object array item\n");
+						// fflush(stdout);
+					}
+					index++;
+				}
+			}
+		} else {
+			UDATA srcOffset = objectAccessBarrierAPI.mixedObjectGetHeaderSize(objectClass);
+
+			UDATA offset = 0;
+			UDATA limit = J9CLASS_UNPADDED_INSTANCE_SIZE(objectClass);
+			UDATA const referenceSize = J9VMTHREAD_REFERENCE_SIZE(currentThread);
+
+			const UDATA *descriptionPtr = (UDATA *) objectClass->instanceDescription;
+			UDATA descriptionBits = 0;
+			if (((UDATA)descriptionPtr) & 1) {
+				descriptionBits = ((UDATA)descriptionPtr) >> 1;
+			} else {
+				descriptionBits = *descriptionPtr++;
+			}
+
+			UDATA descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
+
+			while (offset < limit) {
+				/* Determine if the slot contains an object pointer or not */
+				if (descriptionBits & 1) {
+					j9object_t objectPtr = currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_mixedObjectReadObject(currentThread, heapCopy, srcOffset + offset, false);
+					if (isObjectStackAllocated(currentThread, objectPtr)) {
+						// printf("Recursive heapification\n");
+						// fflush(stdout);
+						j9object_t clonedObject = cloneObject(currentThread, objectPtr, heapificationRefMap);
+						currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_mixedObjectStoreObject(currentThread, heapCopy, srcOffset+offset, clonedObject, false);
+					}
+				}
+				descriptionBits >>= 1;
+				if (descriptionIndex-- == 0) {
+					descriptionBits = *descriptionPtr++;
+					descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
+				}
+				offset += referenceSize;
+			}
+		}
+	
+		return (UDATA)heapCopy;
+	}
+
+	static UDATA
+	heapifyObjectIfRequired(J9VMThread *currentThread, j9object_t srcObject, j9object_t destObject = (j9object_t)-1)
+	{
+		std::unordered_map<UDATA, UDATA> heapificationRefMap;
+		// printf("srcObject addr:%lu, destObject addr:%lu, stackbase:%lu, stackend:%lu\n", (UDATA)srcObject, (UDATA)destObject, (UDATA)(currentThread->stackObject),(UDATA)(currentThread->stackObject->end));
+		
+		if(!isObjectStackAllocated(currentThread, srcObject)) {
+			return (UDATA)srcObject;
+		}
+
+		if (!isObjectStackAllocated(currentThread, destObject)) {
+			// printf("destObject is already on the heap. Directly heapify src\n");
+			// fflush(stdout);
+			return heapifyObject(currentThread, srcObject, heapificationRefMap);
+		}
+
+		bool shouldHeapify = shouldHeapifyStore(currentThread, destObject, srcObject);
+		
+		if(shouldHeapify) {
+			// printf("Going ahead with heapification in JVM\n");
+			// fflush(stdout);
+			return heapifyObject(currentThread, srcObject, heapificationRefMap);
+		} else {
+			// printf("Decided in JVM to not heapify\n");
+			// fflush(stdout);
+			return (UDATA)srcObject;
+		}
+	}
+
+	static UDATA
+	shouldHeapifyIterator(J9VMThread *vmThread, J9StackWalkState *walkState) {
+		UDATA destAddress = (UDATA)walkState->userData1, srcAddress = (UDATA)walkState->userData2;
+		UDATA frameTop = (UDATA)walkState->bp;
+		if(destAddress>frameTop && srcAddress>frameTop) {
+			return J9_STACKWALK_KEEP_ITERATING;
+		} else if(destAddress>frameTop) {
+			walkState->userData3 = (void *)true;
+		} else {
+			walkState->userData3 = (void *)false;
+		}
+		return J9_STACKWALK_STOP_ITERATING;
+	}
+
+	static bool
+	shouldHeapifyStore(J9VMThread *currentThread, j9object_t destObject, j9object_t srcObject) {
+		J9StackWalkState walkState;
+		walkState.walkThread = currentThread;
+		walkState.flags = J9_STACKWALK_ITERATE_FRAMES | J9_STACKWALK_DO_NOT_SNIFF_AND_WHACK;
+		walkState.frameWalkFunction = shouldHeapifyIterator;
+		walkState.userData1 = destObject;
+		walkState.userData2 = srcObject;
+		walkState.userData3 = (void *)true;
+
+		currentThread->javaVM->walkStackFrames(currentThread, &walkState);
+
+		bool shouldObjectBeHeapified = walkState.userData3;
+		return shouldObjectBeHeapified;
+	}
+
 
 	/**
 	 * Determine if the field is a trusted final field.

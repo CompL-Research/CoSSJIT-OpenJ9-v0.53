@@ -311,6 +311,34 @@ bool J9::Options::_aggressiveLockReservation = false;
 
 bool J9::Options::_xrsSync = false;
 
+int32_t J9::Options::_soThreshold = 0;
+
+    // 4th with SPECOPT, Inline and Branch
+   std::unordered_map< 
+    std::string,
+    std::pair<
+        std::vector<int32_t>, // First part: list of integers
+        std::pair<
+         std::unordered_map<
+            int32_t, // Second part key (e.g., 29)
+            std::vector< // Holds a list of pairs
+                std::pair<
+                    std::vector<std::string>, // List of strings (e.g., SpecOpt Child)
+                    std::vector<int32_t> // List of integers (e.g., [54, 70, 114, 130, 170, 185])
+                >
+            >
+         >,
+        std::pair <
+                std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>>, // Third part: Independent Inlining Result map
+                std::vector<std::tuple<std::vector<int32_t>, std::string, std::vector<int32_t>>> // Fourth part: List of (double, string, vector<int32_t>)
+            >
+         >
+      >
+   > J9::Options::_staticAnalysisNonEscapingMap;
+
+
+
+
 void
 J9::Options::findExternalOptions(J9JavaVM *vm, bool consume)
    {
@@ -570,7 +598,415 @@ J9::Options::inlinefileOption(const char *option, void *base, TR::OptionTable *e
       return J9::Options::getDebug()->inlinefileOption(option, base, entry, TR::Options::getJITCmdLineOptions());
       }
    }
+// SPECOPT + Inline New Code to read the File input:
+const char *
+J9::Options::eaResfileOption(const char *option, void *base, TR::OptionTable *entry) 
+{
+   const char *endOpt = option;
+   const char *fail = option;
 
+   for (; *endOpt && *endOpt != ','; endOpt++) {}
+   // int32_t len = endOpt - option;
+   // char *resFileName = (char *)(TR::Compiler->regionAllocator.allocate(len + 1));
+   // memcpy(resFileName, option, len);
+   // resFileName[len] = 0;
+
+   FILE *resFile = fopen("ResFile", "r");
+   if (!resFile) 
+   {
+      TR_VerboseLog::vlogAcquire();
+      TR_VerboseLog::writeLineLocked(TR_Vlog_FAILURE, "Unable to read res file --> ResFile");
+      TR_VerboseLog::vlogRelease();
+      return fail;
+   }
+
+   int num_entries = 0;
+   char *line_buffer = NULL;
+   size_t line_length = 0;
+   while (getline(&line_buffer, &line_length, resFile) != -1)
+   {
+      std::vector<int32_t> numbers;
+      char whitespace_delim[] = " \t\r\n";
+      char *globalsaveptr = NULL, *firstlistptr = NULL;
+      char *signature = strtok_r(line_buffer, whitespace_delim, &globalsaveptr);
+      if (signature == NULL) break;
+
+      // Allocate directly to std::string for signature
+      std::string signatureStr(signature);
+      auto mapElementPtr = &(_staticAnalysisNonEscapingMap[signatureStr]);
+
+      int32_t temp_integer;
+      char listend_delim[] = "]";
+      char newline_delim[] = "\r\n";
+      char second_part_delim[] = "!";
+      char third_part_delim[] = "~";
+
+      // Parse first part
+      char *part1 = strtok_r(NULL, listend_delim, &globalsaveptr);
+      if (part1 != NULL) {
+         char index_delim[] = " [,\t\r\n";
+         char *next_token;
+         bool firstcall_firstpart = true;
+         while ((next_token = strtok_r((firstcall_firstpart ? part1 : NULL), index_delim, &firstlistptr)) != NULL) {
+            firstcall_firstpart = false;
+            if (sscanf(next_token, "%d", &temp_integer))
+               numbers.push_back(temp_integer);
+         }
+         mapElementPtr->first = numbers; // Set the first part in the map
+      }
+
+      // Parse second part
+      // Parse the second part (process entries within [])
+      char *part2 = strtok_r(NULL, second_part_delim, &globalsaveptr);
+      // printf("Read Second part:  %s\n", part2);
+      if (part2 != NULL) {
+         // Remove the outer square brackets
+         char *secondPartCur = strchr(part2, '[');
+         char *secondPartEnd = strrchr(part2, ']');
+         if (secondPartCur && secondPartEnd && secondPartEnd != secondPartCur + 1) {
+            std::string secondPartContent(secondPartCur + 1, secondPartEnd - secondPartCur - 1);
+
+            // Split by '|' to process each entry
+            char *entryToken;
+            char entry_delim[] = "|";
+            char *entrySaveptr = NULL;
+            entryToken = strtok_r(const_cast<char*>(secondPartContent.c_str()), entry_delim, &entrySaveptr);
+            while (entryToken != NULL) {
+                  // Process each entry individually
+                  std::string entry(entryToken);
+                  entryToken = strtok_r(NULL, entry_delim, &entrySaveptr);
+
+                  char *tempsaveptr = NULL;
+                  char *numberStr = strtok_r(const_cast<char*>(entry.c_str()), " ", &tempsaveptr);
+                  int number;
+                  if (sscanf(numberStr, "%d", &number)) {
+                     char *curlyBraceStart = strchr(tempsaveptr, '{');
+                     char *curlyBraceEnd = strchr(tempsaveptr, '}');
+                     std::vector<std::string> stringList;
+                     std::vector<int32_t> indices;
+
+                     if (curlyBraceStart && curlyBraceEnd) {
+                        std::string braceContent(curlyBraceStart + 1, curlyBraceEnd - curlyBraceStart - 1);
+                        char *stringToken = strtok_r(const_cast<char*>(braceContent.c_str()), ",", &tempsaveptr);
+                        while (stringToken) {
+                           stringList.push_back(std::string(stringToken));
+                           stringToken = strtok_r(NULL, ",", &tempsaveptr);
+                        }
+
+                        // Now safely check for a '[' in the string after the closing brace
+
+                        if (curlyBraceEnd) {
+                           char *bracketStart = strchr(curlyBraceEnd, '[');  // Searching for '[' after '}'
+                           if (bracketStart) {
+                                 // Process the content inside the square brackets
+                                 char *bracketEnd = strchr(bracketStart, ']');
+                     
+                                 if (bracketStart && bracketEnd && bracketEnd > bracketStart + 1) {
+                                    std::string indexContent(bracketStart + 1, bracketEnd - bracketStart - 1);
+                                    char *indexToken = strtok_r(const_cast<char*>(indexContent.c_str()), ",", &tempsaveptr);
+                                    while (indexToken) {
+                                       int indexVal;
+                                       if (sscanf(indexToken, "%d", &indexVal)) {
+                                             indices.push_back(indexVal);
+                                       }
+                                       indexToken = strtok_r(NULL, ",", &tempsaveptr);
+                                    }
+                                 }
+                           }
+                        }
+                     }
+
+
+                     // Store the parsed data as a new pair in the map for the second part
+                     mapElementPtr->second.first[number].emplace_back(stringList, indices);
+                  }
+            }
+         }
+      }
+
+      // Parse the third part (process entries with method names and indices)
+      char *part3 = strtok_r(NULL, third_part_delim, &globalsaveptr);
+      // printf("Read Third part: %s\n", part3);
+
+      if (part3 != NULL && strlen(part3) > 2) {  // Check for non-empty input other than []
+         char *thirdPartCur = strchr(part3, '{');
+         char *thirdPartEnd = strrchr(part3, '}');
+
+         // Check if both delimiters were found
+         if (thirdPartCur && thirdPartEnd && thirdPartEnd > thirdPartCur + 1) {
+            char *thirdPartCurToken = thirdPartCur + 1; // Start just after '['
+            // Iterate through entries separated by '|'
+            while (thirdPartCurToken < thirdPartEnd) {
+                  // Find the next '|' or the end of the current segment
+                  char *entryEnd = strchr(thirdPartCurToken, '|');
+                  if (!entryEnd) entryEnd = thirdPartEnd; // If no '|', this is the last segment
+
+                  // Extract the entry as a substring
+                  std::string entry(thirdPartCurToken, entryEnd - thirdPartCurToken);
+                  // printf("Processing entry segment: %s\n", entry.c_str());
+
+                  // Split each entry segment by "!" for separate method entries
+                  char *entrySaveptr = NULL;
+                  char *methodEntry = strtok_r(const_cast<char*>(entry.c_str()), "!", &entrySaveptr);
+
+                  int currentBci = -1; // To track the current BCI across method entries
+                  bool firstEntry = true; // To handle the first entry for BCI
+                  while (methodEntry) {
+                     // printf("Processing methodEntry: %s\n", methodEntry);
+
+                     // Initialize pointer for parsing number and method
+                     char *tempsaveptr = NULL;
+                     std::string methodName;
+                     // For the first method entry, parse the BCI
+                     if (firstEntry) {
+                        // Get the integer number from the start of the entry
+                        char *numberStr = strtok_r(methodEntry, " ", &tempsaveptr);
+                        int number;
+                        if (numberStr && sscanf(numberStr, "%d", &number) == 1) {
+                              currentBci = number;  // Set the current BCI from the first method entry
+                              // printf("Parsed BCI number: %d\n", currentBci);
+                              firstEntry = false;  // Don't assign BCI again for subsequent entries
+                        }
+                           // Extract the method name until the '[' character
+                           char *methodNameStr = strtok_r(NULL, "{", &tempsaveptr);
+                           methodName = (methodNameStr != NULL) ? methodNameStr : "";
+                           // printf("Parsed method name: %s\n", methodName.c_str());
+                     } else {
+                           // Extract the method name until the '[' character
+                           char *methodNameStr = strtok_r(methodEntry, "{", &tempsaveptr);
+                           methodName = (methodNameStr != NULL) ? methodNameStr : "";
+                           // printf("Parsed method name: %s\n", methodName.c_str());
+                     }
+
+                     // After extracting the method name, `tempsaveptr` should point to the indices part
+                     // Look for the '[' which indicates the start of the indices
+                     char *indexStart = tempsaveptr;
+                     char *indexEnd = strchr(indexStart, '}');
+                     
+                     // printf("Index start: %p and end: %p\n", indexStart, indexEnd);
+                     // Check if indices are found
+                     if (indexStart && indexEnd && indexEnd > indexStart) {
+                        std::string indexContent(indexStart, indexEnd - indexStart);
+                        // printf("Parsed index content: %s\n", indexContent.c_str());
+
+                        // Tokenize and parse individual indices
+                        std::vector<int32_t> indices;
+                        char *indexSaveptr = NULL;
+                        char *indexToken = strtok_r(const_cast<char*>(indexContent.c_str()), ",", &indexSaveptr);
+
+                        while (indexToken) {
+                              int indexVal;
+                              if (sscanf(indexToken, "%d", &indexVal) == 1) {
+                                 indices.push_back(indexVal);
+                                 // printf("Parsed index value: %d\n", indexVal);
+                              }
+                              indexToken = strtok_r(NULL, ",", &indexSaveptr);
+                        }
+
+                        // Print results
+                        // printf("Inline Result at BCI: %d\n", currentBci);
+                        // printf("    Method: %s\n", methodName.c_str());
+                        // printf("    STACK ALLOCATABLE BCI: ");
+                        // for (int index : indices) {
+                        //       printf("[%d] ", index);
+                        // }
+                        // printf("\n");
+
+                        // Store method and indices in the map using the current BCI
+                        mapElementPtr->second.second.first[currentBci][methodName] = indices;
+                     } 
+                     // else {
+                        // printf("Failed to parse indices in methodEntry: %s\n", methodEntry);
+                     // }
+                     // Move to the next method entry separated by "!"
+                     methodEntry = strtok_r(NULL, "!", &entrySaveptr);
+                  }
+                  thirdPartCurToken = entryEnd + 1;
+            }
+         } else {
+            // printf("Third part is empty or incorrectly formatted\n");
+         }
+      } else {
+         // printf("Third part is empty or just contains '[]'\n");
+      }
+
+      // char *part4 = strtok_r(NULL, newline_delim, &globalsaveptr);
+
+
+      // Parse the fourth part (list of tuples)
+      char *part4 = strtok_r(NULL, newline_delim, &globalsaveptr);
+      // printf("Read Fourth part: %s\n", part4);
+      if (part4 != NULL && strlen(part4) > 2) {  // Check for non-empty input other than []
+         char *fourthPartCur = strchr(part4, '[');
+         char *fourthPartEnd = strrchr(part4, ']');
+
+         // printf("fourthPartCur: %s, fourthPartEnd: %s\n", fourthPartCur, fourthPartEnd);
+         // Check if both delimiters were found
+         if (fourthPartCur && fourthPartEnd && fourthPartEnd > fourthPartCur + 1) {
+            std::string fourthPartContent(fourthPartCur + 1, fourthPartEnd - fourthPartCur - 1);
+
+            // Split by '|' to process each tuple
+            char *tupleToken;
+            char tuple_delim[] = "|";
+            char *tupleSaveptr = NULL;
+            tupleToken = strtok_r(const_cast<char*>(fourthPartContent.c_str()), tuple_delim, &tupleSaveptr);
+            
+            // Process each tuple individually            
+            while (tupleToken != NULL) {
+               // printf("Processing tuple: %s\n", tupleToken);
+               std::string tupleStr(tupleToken);
+               tupleToken = strtok_r(NULL, tuple_delim, &tupleSaveptr);
+
+               // Parse the tuple components
+               char *tupleSaveptrInner = NULL;
+               char *firstVectorStr = strtok_r(const_cast<char*>(tupleStr.c_str()), "]", &tupleSaveptrInner);
+               char *stringStr = strtok_r(NULL, "[", &tupleSaveptrInner);
+               char *secondVectorStr = strtok_r(NULL, "]", &tupleSaveptrInner);
+               
+               // printf("firstVectorStr: %s, stringStr: %s, secondVectorStr: %s\n", firstVectorStr, stringStr, secondVectorStr);
+
+               if (firstVectorStr && stringStr && secondVectorStr) {
+                  // Parse the first vector of integers
+                  std::vector<int32_t> firstVector;
+                  // printf("firstVectorStr before: %s\n", firstVectorStr);
+                  //firstVectorStr++;  // This will skip the leading '[' character
+                  // printf("firstVectorStr[0]: %c\n", firstVectorStr[0]);
+                  char* openBracketPos = strchr(firstVectorStr, '[');
+                  if (openBracketPos != nullptr) {
+                     // Move the pointer after '['
+                     firstVectorStr = openBracketPos + 1;
+                  }
+                  // printf("firstVectorStr after: %s\n", firstVectorStr);
+                  char *firstVectorToken = strtok_r(firstVectorStr, ",", &tupleSaveptrInner);
+                  while (firstVectorToken) {
+                     int32_t value;
+                     if (sscanf(firstVectorToken, "%d", &value)) {
+                        // printf("1. Parsed value: %d\n", value);
+                        firstVector.push_back(value);
+                     }
+                     firstVectorToken = strtok_r(NULL, ",", &tupleSaveptrInner);
+                  }
+
+                  // Parse the string
+                  std::string stringValue(stringStr);
+
+                  // Parse the second vector of integers
+                  std::vector<int32_t> secondVector;
+                  // secondVectorStr++; // This will skip the leading '[' character
+                  char *secondVectorToken = strtok_r(secondVectorStr, ",", &tupleSaveptrInner);
+                  while (secondVectorToken) {
+                     int32_t value;
+                     if (sscanf(secondVectorToken, "%d", &value)) {
+                        // printf("2. Parsed value: %d\n", value);
+                        secondVector.push_back(value);
+                     }
+                     secondVectorToken = strtok_r(NULL, ",", &tupleSaveptrInner);
+                  }
+
+                  // Store the parsed tuple in the map
+                  // if (!firstVector.empty() || !secondVector.empty()) {
+                  //    // printf("Parsed tuple: %s\n", stringValue.c_str());
+                  // }
+                  mapElementPtr->second.second.second.emplace_back(firstVector, stringValue, secondVector);
+               }
+            }
+         }
+      }
+      num_entries++;
+   }
+   // printf("Read %d entries from %s\n", num_entries, resFileName);
+
+   // // Print the values stored in the map
+   // for (const auto& entry : _staticAnalysisNonEscapingMap) {
+   //    const std::string& signature = entry.first;
+   //    const std::vector<int32_t>& firstPart = entry.second.first;
+   //    const auto& secondPart = entry.second.second.first;
+   //    const auto& thirdPart = entry.second.second.second.first;
+   //    const auto& fourthPart = entry.second.second.second.second;
+      
+   //    printf("Method Name: %s\n", signature.c_str());
+   //    printf("  1. Direct Stack Allocation: [");
+   //    for (size_t i = 0; i < firstPart.size(); ++i) {
+   //       printf("%d", firstPart[i]);
+   //       if (i < firstPart.size() - 1) printf(", ");
+   //    }
+   //    printf("]\n");
+
+
+   //    // Second part iteration
+   //    for (const auto& secondEntry : secondPart) {
+   //       int number = secondEntry.first;
+   //       const std::vector<std::pair<std::vector<std::string>, std::vector<int32_t>>>& entryPairs = secondEntry.second;
+   //       printf("  2. Based of Speculation: \n");
+   //       printf("    Invocation BCI: %d\n", number);
+   //       for (const auto& methodEntry : entryPairs) {
+   //          const std::vector<std::string>& stringList = methodEntry.first;
+   //          const std::vector<int32_t>& indices = methodEntry.second;
+
+   //          printf("    TYPES: {");
+   //          for (size_t i = 0; i < stringList.size(); ++i) {
+   //             printf("%s", stringList[i].c_str());
+   //             if (i < stringList.size() - 1) printf(", ");
+   //          }
+   //          printf("}\n");
+
+   //          printf("    BCI STACK ALLOCATION: [");
+   //          for (size_t i = 0; i < indices.size(); ++i) {
+   //             printf("%d", indices[i]);
+   //             if (i < indices.size() - 1) printf(", ");
+   //          }
+   //          printf("]\n");
+   //       }
+   //    }
+
+   //    // Third part iteration
+   //    for (const auto& thirdEntry : thirdPart) {
+   //       int number = thirdEntry.first;
+   //       const auto& inliningResults = thirdEntry.second;
+
+   //       printf("  3. Inline Result at BCI: %d\n", number);
+   //       for (const auto& methodEntry : inliningResults) {
+   //          const std::string& methodName = methodEntry.first;
+   //          const std::vector<int32_t>& indices = methodEntry.second;
+
+   //          printf("    Method: %s\n", methodName.c_str());
+   //          printf("    STACK ALLOCATABLE BCI: {");
+   //          for (size_t i = 0; i < indices.size(); ++i) {
+   //             printf("%d", indices[i]);
+   //             if (i < indices.size() - 1) printf(", ");
+   //          }
+   //          printf("}\n");
+   //       }
+   //    }
+
+   //    // Print fourth part
+   //    // printf(fourthPart.size() > 0 ? "  4. Branching Results: \n" : "");
+   //    for (const auto& tuple : fourthPart) {
+   //       const std::vector<int32_t>& firstVector = std::get<0>(tuple);
+   //       const std::string& stringValue = std::get<1>(tuple);
+   //       const std::vector<int32_t>& secondVector = std::get<2>(tuple);
+
+   //       printf("  4. Branching Results: \n");
+   //       printf("    BCI: [");
+   //       for (size_t i = 0; i < firstVector.size(); ++i) {
+   //          printf("%d", firstVector[i]);
+   //          if (i < firstVector.size() - 1) printf(", ");
+   //       }
+   //       printf("]\n");
+
+   //       printf("    Type: %s\n", stringValue.c_str());
+
+   //       printf("    BCI: [");
+   //       for (size_t i = 0; i < secondVector.size(); ++i) {
+   //          printf("%d", secondVector[i]);
+   //          if (i < secondVector.size() - 1) printf(", ");
+   //       }
+   //       printf("]\n");
+   //    }
+   // }
+   // printf("=====================================================================================\n");
+   return endOpt;
+}
 
 struct vmX
    {
@@ -978,6 +1414,10 @@ TR::OptionTable OMR::Options::_feOptions[] = {
         TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_disableIProfilerClassUnloadThreshold, 0, "F%d", NOT_IN_SUBSET},
    {"dltPostponeThreshold=",      "M<nnn>\tNumber of dlt attempts inv. count for a method is seen not advancing",
         TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_dltPostponeThreshold, 0, "F%d", NOT_IN_SUBSET },
+   // {"EAResfile=", "O\tStatic escape analysis results (.res) file path",
+   //    TR::Options::eaResfileOption,  0, 0,  "F%s"},
+   {"EAResflag", "O\tStatic escape analysis results reading flag",
+         TR::Options::eaResfileOption,  0, 0, "F"},
    {"exclude=",           "D<xxx>\tdo not compile methods beginning with xxx", TR::Options::limitOption, 1, 0, "P%s"},
    {"expensiveCompWeight=", "M<nnn>\tweight of a comp request to be considered expensive",
         TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_expensiveCompWeight, 0, "F%d", NOT_IN_SUBSET },
@@ -1245,6 +1685,8 @@ TR::OptionTable OMR::Options::_feOptions[] = {
    {"smallMethodBytecodeSizeThresholdForJITServerAOTCache=", "O<nnn>\tThreshold for determining small methods that should "
                                          "not be converted to AOT, but rather be jitted remotely",
         TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_smallMethodBytecodeSizeThresholdForJITServerAOTCache, 0, "F%d", NOT_IN_SUBSET},
+   {"soThreshold=", "R<nnn>\tThreshold value for speculative stack allocation",
+        TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_soThreshold, 0, "F%d", NOT_IN_SUBSET },
    {"stack=",             "C<nnn>\tcompilation thread stack size in KB",
         TR::Options::setStaticNumeric, (intptr_t)&TR::Options::_stackSize, 0, "F%d", NOT_IN_SUBSET},
 #if defined(J9VM_OPT_JITSERVER)

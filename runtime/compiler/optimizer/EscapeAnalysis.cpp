@@ -44,6 +44,7 @@
 #include "control/Options_inlines.hpp"
 #include "control/Recompilation.hpp"
 #include "control/RecompilationInfo.hpp"
+#include "cs2/bitvectr.h"
 #include "env/CompilerEnv.hpp"
 #include "env/ObjectModel.hpp"
 #include "env/TRMemory.hpp"
@@ -93,6 +94,16 @@
 #include "ras/Debug.hpp"
 #include "runtime/J9Profiler.hpp"
 #include "runtime/J9Runtime.hpp"
+#include "runtime/J9ValueProfiler.hpp"
+#include "runtime/J9Profiler.hpp"
+#include "optimizer/CallInfo.hpp"
+#include <unordered_set>
+
+#include "runtime/RuntimeAssumptions.hpp"
+#include "env/PersistentCHTable.hpp"
+#include "env/PersistentInfo.hpp"
+#include "infra/List.hpp"
+#include "env/CHTable.hpp"
 
 #define OPT_DETAILS "O^O ESCAPE ANALYSIS: "
 
@@ -134,6 +145,20 @@ TR_EscapeAnalysis::TR_EscapeAnalysis(TR::OptimizationManager *manager)
    _aNewArrayNoZeroInitSymRef = comp()->getSymRefTab()->findOrCreateANewArrayNoZeroInitSymbolRef(0);
    _maxPassNumber = 0;
 
+   // if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
+   //    _nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())]);
+   // } else {
+   //    _nonEscapingObjects = NULL;
+   // }
+   
+   if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
+      _nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].first);
+      _inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first;
+   } else {
+      _nonEscapingObjects = nullptr;
+      _inlining_result.clear();
+   }
+   
    _dememoizationSymRef = NULL;
 
    _createStackAllocations   = true;
@@ -316,6 +341,9 @@ int32_t TR_EscapeAnalysis::perform()
 
    int32_t cost = 0;
 
+   // AA
+   // Scope for stack memory region
+
    {
    TR::StackMemoryRegion stackMemoryRegion(*trMemory());
    _callsToProtect = new (trStackMemory()) CallLoadMap(CallLoadMapComparator(), comp()->trMemory()->currentStackRegion());
@@ -449,6 +477,9 @@ int32_t TR_EscapeAnalysis::perform()
 
    return cost;
    }
+
+   // AA
+   // perform method ends here.
 
 const char *
 TR_EscapeAnalysis::optDetailString() const throw()
@@ -662,6 +693,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       comp()->dumpMethodTrees("Trees before Escape Analysis");
       }
 
+      // printf("Current Method is: %s \n", comp()->signature());fflush(stdout);
+      // printf("\t = = = = = = = = = = Performing pass %d of Escape Analysis for %s at hotness level %s = = = = = = =\n", manager()->numPassesCompleted(), comp()->signature(), comp()->getHotnessName());
+
    _useDefInfo                 = NULL; // Build these only if required
    _invalidateUseDefInfo       = false;
    _valueNumberInfo            = NULL;
@@ -691,7 +725,661 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
    // Any that are candidates for local allocation or desynchronization are
    // added to the list of candidates.
    //
-   findCandidates();
+
+   /* ======================== Conditional Allocation of Local Objects on Branch Implementation  =======================================*/ 
+   // First Way -- Calling Method getBranchCounters
+
+   // Data Structure to Store Info:
+      struct ProfiledBranchInfo {
+         // std::string className;
+         int32_t byteCodeIndex;
+         int32_t ProfileReadbranchToCount;
+         int32_t ProfileReadfallThroughCount;
+         float ProfileReadbranchTakenPercent;
+         float ProfileReadfallThroughPercent;
+      };
+
+
+   std::vector<ProfiledBranchInfo> profiledBranchData;
+   TR::CFGNode *node2;
+   for (node2 = comp()->getFlowGraph()->getFirstNode(); node2; node2 = node2->getNext()) {
+      TR::Block *block = node2->asBlock();
+      if (block->getEntry()!=NULL &&
+         (node2->getSuccessors().size() == 2) &&
+         (block->getLastRealTreeTop()->getNode()->getOpCode().isIf() || block->getLastRealTreeTop()->getNode()->getOpCode().isSwitch())) {
+         // Get branch node
+         TR::Node *ifNode = block->getLastRealTreeTop()->getNode();
+         
+         // Get fallthrough and branch target blocks
+         TR::Block *nextBlock = block->getNextBlock();
+         TR::TreeTop *branchDestination = ifNode->getBranchDestination();
+         TR::Block *branchTargetBlock = (branchDestination && branchDestination->getNode()) ? branchDestination->getNode()->getBlock() : nullptr;
+         if (!branchTargetBlock) {
+            // Handle the error or return if branchTargetBlock is null
+            continue;
+         }
+
+         int32_t fallThroughCount = 0;
+         int32_t branchToCount = 0;
+
+         // Get branch taken and fallthrough counts from profiling data 
+         TR_BranchProfileInfoManager * branchProfileInfo = TR_BranchProfileInfoManager::get(comp());
+         if (branchProfileInfo)
+            branchProfileInfo->getBranchCounters(ifNode, branchTargetBlock->getEntry(), &branchToCount, &fallThroughCount, comp());
+
+         // Print profiling info if either count is non-zero
+         if (branchToCount > 0 || fallThroughCount > 0) {
+            // printf("\nBranch Profile Data for Method: %s\n", comp()->signature());
+            // printf("Branch Opcode: %s\n", ifNode->getOpCode().getName());
+            // printf("Branch BCI: %d\n", ifNode->getByteCodeIndex());
+            // printf("Branch taken count: %d\n", branchToCount); 
+            // printf("Branch fall through count: %d\n", fallThroughCount);
+
+            // Calculate percentages if total > 0
+            int32_t total = branchToCount + fallThroughCount;
+            if (total > 0) {
+               float takenPercentage = (branchToCount * 100.0f) / total;
+               float fallThroughPercentage = (fallThroughCount * 100.0f) / total;
+               // printf("Branch taken percentage: %.2f%%\n", takenPercentage);
+               // printf("Branch fall through percentage: %.2f%%\n", fallThroughPercentage);
+            }
+         }
+
+         /// Calculate percentages if total > 0
+         int32_t total = branchToCount + fallThroughCount;
+         float takenPercentage = 0.0f;
+         float fallThroughPercentage = 0.0f;
+         if (total > 0) {
+            takenPercentage = (branchToCount * 100.0f) / total;
+            fallThroughPercentage = (fallThroughCount * 100.0f) / total;
+            // printf("Branch taken percentage: %.2f%%\n", takenPercentage);
+            // printf("Branch fall through percentage: %.2f%%\n", fallThroughPercentage);
+         }
+         bool entryExists = false;
+
+         // Iterate through profiledBranchData to check for duplicates
+         for (const auto& info : profiledBranchData) {
+            if (info.byteCodeIndex ==ifNode->getByteCodeIndex()) {
+               entryExists = true;  // Mark as found
+               break;  // No need to check further once we find a match
+            }
+         }
+         // If the entry does not exist, add it to profiledBranchData
+         if (!entryExists) {
+            ProfiledBranchInfo info;
+            // info.className = comp()->signature();
+            info.byteCodeIndex = ifNode->getByteCodeIndex();
+            info.ProfileReadbranchToCount = branchToCount;
+            info.ProfileReadfallThroughCount = fallThroughCount;
+            info.ProfileReadbranchTakenPercent = takenPercentage;
+            info.ProfileReadfallThroughPercent = fallThroughPercentage;
+            profiledBranchData.push_back(info);
+            // printf(" Added new entry: ClassName: %s, ByteCodeIndex: %d, BranchTakenCount: %d, FallThroughCount: %d, BranchTakenPercent: %.2f%%, FallThroughPercent: %.2f%%\n", comp()->signature(), info.byteCodeIndex, info.ProfileReadbranchToCount, info.ProfileReadfallThroughCount, info.ProfileReadbranchTakenPercent, info.ProfileReadfallThroughPercent);
+         } else {
+            // printf(" Duplicate entry found, not adding: ClassName: %s, ByteCodeIndex: %d, BranchTakenCount: %d, FallThroughCount: %d\n", comp()->signature(), ifNode->getByteCodeIndex(), branchToCount, fallThroughCount);
+         } 
+      }
+   }
+
+   //  Check from Static Analysis
+   auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature());
+   if (mapEntry != TR::Options::_staticAnalysisNonEscapingMap.end())
+   {
+      // Get the fourth part of the map 
+      const auto& fourthPart = mapEntry->second.second.second.second;
+      for (const auto& tuple : fourthPart) {
+         const std::vector<int32_t>& firstVector = std::get<0>(tuple);
+         const std::string& stringValue = std::get<1>(tuple);
+         const std::vector<int32_t>& secondVector = std::get<2>(tuple);
+         float accumulatedPercent = 0.0f; 
+         for (size_t i = 0; i < firstVector.size(); ++i) {
+            // printf("%d", firstVector[i]);
+            for (const auto& info : profiledBranchData) {
+               // printf("%d", firstVector[i]);
+               if(firstVector[i] == info.byteCodeIndex) {
+                  // if (strcmp(stringValue.c_str(), "Taken") == 0) {
+                     accumulatedPercent += info.ProfileReadfallThroughPercent;
+                     // printf("Found IF NODE BCI: %d, Added its Percent: %f, Current Percent: %f\n", info.byteCodeIndex, info.ProfileReadfallThroughPercent, accumulatedPercent);
+                  // }
+               }
+            }
+         }
+         // If the accumulatedPercent value exceeds 0.7, store BCIs
+         // printf("Current Threshold: %d\n", TR::Options::_soThreshold);
+         int bciCurrentPercent = static_cast<int>(accumulatedPercent); 
+         // if (accumulatedPercent > TR::Options::_soThresold)
+         // if (accumulatedPercent > 70.0f)
+         if (bciCurrentPercent > TR::Options::_soThreshold)
+         {
+            // Add all the BCIs from the indices vector to the list
+            branchaccumulatedBCIs.insert(branchaccumulatedBCIs.end(), secondVector.begin(), secondVector.end());
+            // printf("BCI stored based BRANCH PROFILE INFO: --> ClassName: %s, Percent: %f\n", comp()->signature(), accumulatedPercent);
+            // printf("BCIs stored: ");
+            for (size_t i = 0; i < secondVector.size(); ++i) {
+               // printf("%d", secondVector[i]);
+            }
+         }
+      }
+   }
+
+
+   // Second Way -- Using CFGEdges
+   /* ======================== Conditional Allocation of Local Objects on Branch Implementation  =======================================*/ 
+
+   // TR::CFGNode *node;
+   // for (node = comp()->getFlowGraph()->getFirstNode(); node; node = node->getNext()) {
+   //    TR::Block *block = node->asBlock();
+   //    if (block->getEntry()!=NULL &&
+   //        (node->getSuccessors().size() == 2) &&
+   //        (block->getLastRealTreeTop()->getNode()->getOpCode().isIf() || block->getLastRealTreeTop()->getNode()->getOpCode().isSwitch())) {
+   //          TR::Node *ifNode = block->getLastRealTreeTop()->getNode();
+   //          TR::Block *nextBlock = block->getNextBlock();
+            
+   //          // Get branch taken target block  
+   //          TR::Block *branchTargetBlock = ifNode->getBranchDestination()->getNode()->getBlock();
+
+   //          // Get frequencies using edge traversal
+   //          int32_t branchTakenFreq = 0;
+   //          int32_t branchNotTakenFreq = 0;
+
+   //          for (auto edge = block->getSuccessors().begin(); edge != block->getSuccessors().end(); ++edge) {
+   //             TR::Block *targetBlock = toBlock((*edge)->getTo());
+   //             if (targetBlock == branchTargetBlock) {
+   //                branchTakenFreq = (*edge)->getFrequency();
+   //             } else {
+   //                branchNotTakenFreq = (*edge)->getFrequency();
+   //             }
+   //          }
+
+   //          printf("Processing branch in method: %s\n", comp()->signature());
+   //          printf("Branch opcode: %s\n", ifNode->getOpCode().getName());
+   //          printf("Branch BCI: %d\n", ifNode->getByteCodeIndex());
+   //          printf("Branch taken count: %d\n", branchTakenFreq);
+   //          printf("Branch not taken count: %d\n", branchNotTakenFreq);
+            
+   //          // Calculate branch taken percentage if total > 0
+   //          int32_t total = branchTakenFreq + branchNotTakenFreq;
+   //          if (total > 0) {
+   //             float takenPercentage = (branchTakenFreq * 100.0f) / total;
+   //             float notTakenPercentage = (branchNotTakenFreq * 100.0f) / total;
+   //             printf("Branch taken percentage: %.2f%%\n", takenPercentage); 
+   //             printf("Branch not taken percentage: %.2f%%\n", notTakenPercentage);
+   //          }
+   //    }
+   // }
+
+
+   int32_t possibleAllocations=0, withinRes=0;
+
+   std::unordered_set<int32_t> visitedBCIs;
+   for (_curTree = comp()->getStartTree(); _curTree; _curTree = _curTree->getNextTreeTop())
+      {
+         TR::Node    *node = _curTree->getNode();
+         TR::NodeChecklist visited (comp());
+         if (visited.contains(node))
+            continue;
+         visited.add(node);
+         if (node->getOpCodeValue() == TR::BBStart)
+            {
+            _curBlock = node->getBlock();
+            continue;
+            }
+
+         if (!node->getNumChildren())
+            continue;
+         if (visitedBCIs.find(node->getByteCodeIndex()) != visitedBCIs.end()) {
+            //printf("BCI alreadyt visisted: %d", node->getByteCodeIndex() );
+            continue;  // Skip processing
+         }
+         
+         // if (node->getOpCode().isIf() || node->getOpCode().isSwitch()) {
+         //       TR::Block *block = node->getBlock();
+         //       TR::TreeTop *branchDestination = node->getBranchDestination();
+         //       TR::Block *branchToBlock = branchDestination->getNode()->getBlock();
+         //       // TR::Block *fallThroughBlock = block ? block->getNextBlock() : NULL;
+         //       int32_t branchToFrequency = 0;
+         //       int32_t fallThroughFrequency = 0;
+               
+         //       TR::CFGEdge *branchEdge = block->getEdge(branchToBlock);
+         //       // TR::CFGEdge *fallThroughEdge = (fallThroughBlock != NULL) ? block->getEdge(fallThroughBlock) : NULL;
+               
+         //       if (branchEdge)
+         //          branchToFrequency = branchEdge->getFrequency();
+         //       // if (fallThroughEdge)
+         //       //    fallThroughFrequency = fallThroughEdge->getFrequency();
+                  
+         //       int32_t fallThroughCount = 0;
+         //       int32_t branchToCount = 0;
+         //       TR_BranchProfileInfoManager * branchManager = TR_BranchProfileInfoManager::get(comp());
+         //       // if (branchManager)
+         //       //    branchManager->getBranchCounters(node, fallThroughBlock->getEntry(), &branchToCount, &fallThroughCount, comp());
+         //       printf("2. Branch to count: %d, Fall through count: %d\n", branchToCount, fallThroughCount);
+         //       printf("3. Branch to frequency: %d, Fall through frequency: %d\n", branchToFrequency, fallThroughFrequency);
+         // }
+        
+         if (visited.contains(node))
+            continue;
+         visited.add(node);
+         visitedBCIs.insert(node->getByteCodeIndex());
+         
+         // if(node->getOpCode().isBranch()) {
+         //    if (node->getOpCode().isIf())
+         //    {
+         //       printf("If Branch at BCI %d\n", node->getByteCodeIndex());
+         //       TR::Node *ifNode = node;
+         //       TR::TreeTop *thenNode = ifNode->getBranchDestination();
+         //       TR::TreeTop *elseTreeTop = _curTree->getNextTreeTop();
+         //       TR::Node *elseNode = elseTreeTop ? elseTreeTop->getNode() : nullptr;
+               
+         //       // Get the profile value for the if-else branch
+         //       TR_ValueProfileInfoManager *profileManager = TR_ValueProfileInfoManager::get(comp());
+         //       if (profileManager)
+         //       {
+         //         TR_ValueInfo *branchProfileInfo = static_cast<TR_ValueInfo *>(profileManager->getValueInfo(ifNode->getByteCodeInfo(), comp(), ValueInfo));
+         //         if (!branchProfileInfo) {
+         //             printf(" no valueInfo %p\n", this);
+         //             continue;
+         //          }
+         //       // printf("Came after if condition check: %p\n",this);
+         //       TR_ScratchList<TR_ExtraValueInfo> valuesSortedByFrequency(comp()->trMemory());
+         //       branchProfileInfo->getSortedList(comp(), &valuesSortedByFrequency);
+         //       ListIterator<TR_ExtraValueInfo> sortedValuesIt(&valuesSortedByFrequency);
+
+         //       uint32_t totalFrequency = branchProfileInfo->getTotalFrequency();
+         //       printf(" Profile Data: Total frequency of %f  at [BCI: %d] \n", (float)totalFrequency, node->getByteCodeIndex());
+         //       //       uint32_t totalFrequency = branchProfileInfo->getTotalCount();
+         //       //       uint32_t thenFrequency = branchProfileInfo->getThenCount();
+         //       //       uint32_t elseFrequency = branchProfileInfo->getElseCount();
+                
+         //       //       float thenProbability = (float)thenFrequency / (float)totalFrequency;
+         //       //       float elseProbability = (float)elseFrequency / (float)totalFrequency;
+                
+         //       //       printf("Profile Data: If-Else Branch at BCI %d\n", ifNode->getByteCodeIndex());
+         //       //       printf("  Then branch taken: %u times (%.2f%%)\n", thenFrequency, thenProbability * 100.0);
+         //       //       printf("  Else branch taken: %u times (%.2f%%)\n", elseFrequency, elseProbability * 100.0);
+                 
+         //       }
+         //    }
+         // // }
+         // printf("Processing the node : \n 1. Method: %s \n 2. BCI: %d \n 3. Opcode: %s \n", comp()->signature(), node->getByteCodeIndex(), node->getOpCode().getName());
+
+         /* ======================== Check 1  =======================================*/ 
+         
+         /*
+         * Idea: If the class hierarchy doesn't have a class which can make an object escape. Mark the object directly for stack allocation.  
+         * Eg: Class heirarchy is:
+         *                 A
+         *               / \  \
+         *              B   C  D       
+         * where class D makes the object escape and B and C doesn't. Static analysis will mark the object for stack allocation for B and C. 
+         * Now, assume if D is not loaded yet and hence we have just B and C in the class hierarchy. Get the static analyis result for 
+         * the current method, check if in the heirarchy the methods are same static analysis or a subset of it. For eg: here B and C 
+         * are loaded as well statically marked cases for stack allocation. Even if just one of them were loaded (between B and C) we mark 
+         * the current object for stack allocation. If any other class comes in the hierarchy which is not listed in the static analysis we skip 
+         * this step and continue with profile based analysis.
+         *        
+         */
+
+         // [DEBUG]
+         //  if(node->getOpCode().isCallIndirect()) {
+         //       if (strncmp(comp()->signature(), "SpecOpt", 7) == 0) {
+         //          printf("\t Found an indirect callsite %p in the method %s\n", node->getOpCode().getName(), comp()->signature());
+         //          TR::Node *baseObject = node;
+         //          printf("\t The based object is %p and type is %s \n ", baseObject, baseObject->getType().getName(baseObject->getDataType()));
+         //       }
+         //  }
+         bool isCH = false;
+         TR_OpaqueClassBlock *clazz = comp()->getMethodBeingCompiled()->containingClass();
+         TR_PersistentClassInfo *classInfo = comp()->getPersistentInfo()->getPersistentCHTable()->findClassInfoAfterLocking(clazz, comp());
+         if(node->getOpCode().isCallIndirect()) {   
+            if (classInfo)
+            {
+               TR_ScratchList<TR_PersistentClassInfo> subClasses(trMemory());
+               TR_ClassQueries::getSubClasses(classInfo, subClasses, fe());
+               std::vector<std::string> subclassNames;  // Vector to store subclass names
+               // classInfo->getSubClasses(subClasses, comp());
+                  // printf("Number of subclasses = %d\n", subClasses.getSize());
+                  ListIterator<TR_PersistentClassInfo> subClassesIt(&subClasses);
+                  for (TR_PersistentClassInfo *subClassInfo = subClassesIt.getFirst(); subClassInfo; subClassInfo = subClassesIt.getNext())
+                  {
+                     TR_OpaqueClassBlock *subClass = subClassInfo->getClassId();
+                     int32_t len = 1;
+                     const char *subclassName = TR::Compiler->cls.classNameChars(comp(), subClass, len);
+                     if (subclassName) {
+                        subclassNames.emplace_back(subclassName);  // Store subclass name
+                        // printf("Subclasses are : %s \n", subclassName);
+                     }
+                  }
+               // Check if className exists in _staticAnalysisNonEscapingMap
+               bool isSubset = true;
+               for (const auto& info : subclassNames) {
+                  auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature());
+                  if (mapEntry != TR::Options::_staticAnalysisNonEscapingMap.end())
+                  {
+                     // Get the second part of the map (unordered_map)
+                     const auto& secondPart = mapEntry->second.second.first;
+                     // Loop through the secondPart (which contains byteCodeIndex and the associated data)
+                     bool found = false;  // Flag to break if we find a match
+                     for (const auto& secondEntry : secondPart)
+                     {
+                        int number = secondEntry.first;  // This is the byteCodeIndex in the map
+                        //printf(" Number is: %d, and BCI is: %d\n", number, info.byteCodeIndex); 
+                        // Check if the number (byteCodeIndex) matches info.byteCodeIndex
+                        if (number == node->getByteCodeIndex())
+                        {
+                           // secondEntry.second is a vector of pairs, where each pair has a vector of strings and a vector of indices
+                           const auto& entryPairs = secondEntry.second;
+                           // Loop through the pairs in the entryPairs vector
+                           for (const auto& methodEntry : entryPairs)
+                           {
+                              const std::vector<std::string>& stringList = methodEntry.first;
+                              const std::vector<int32_t>& indices = methodEntry.second;
+                              // Check if the info.className exists in the stringList
+                              if (std::find(stringList.begin(), stringList.end(), info) == stringList.end())
+                              {
+                                 // If className is not found
+                                    // printf("!!! Class Not found: Not a proper subset: %s\n", info.c_str());
+                                    isSubset = false;
+                                    break;
+                              }
+                           }
+                           // Break the loop since we found that it is not proper subset
+                           if (!isSubset)
+                              break;
+                        }
+                     }
+                  }  
+               }
+               // If proper subset
+               if(isSubset) {
+                 auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature());
+                  if (mapEntry != TR::Options::_staticAnalysisNonEscapingMap.end())
+                  {
+                     // Get the second part of the map (unordered_map)
+                     const auto& secondPart = mapEntry->second.second.first;
+                     // Loop through the secondPart (which contains byteCodeIndex and the associated data)
+                     bool found = false;  // Flag to break if we find a match
+                     for (const auto& secondEntry : secondPart)
+                     {
+                        int number = secondEntry.first;  // This is the byteCodeIndex in the map
+                        //printf(" Number is: %d, and BCI is: %d\n", number, info.byteCodeIndex); 
+                        // Check if the number (byteCodeIndex) matches info.byteCodeIndex
+                        if (number == node->getByteCodeIndex())
+                        {
+                           // secondEntry.second is a vector of pairs, where each pair has a vector of strings and a vector of indices
+                           const auto& entryPairs = secondEntry.second;
+                           // Loop through the pairs in the entryPairs vector
+                           for (const auto& methodEntry : entryPairs)
+                           {
+                              const std::vector<std::string>& stringList = methodEntry.first;
+                              const std::vector<int32_t>& indices = methodEntry.second;
+                              accumulatedBCIs.insert(accumulatedBCIs.end(), indices.begin(), indices.end());
+                              isCH = true;
+                              // printf("BCI ADDED FOR STACK ALLOCATION BASED ON CLASS HIERARCHY: --> ClassName: %s ", comp()->signature());
+                              // printf("ADDED BCI: \n");
+                              for (const auto &index : indices) {
+                                 printf("%d ", index);
+                              }
+                           }
+                        }
+                     }
+                  }
+               }
+            }
+         }
+
+         /* ======================== Check 2  =======================================*/ 
+         if(!isCH) { 
+            //Finding type for the callsite
+            struct ProfiledClassInfo {
+               std::string className;
+               int32_t byteCodeIndex;
+               float value;
+            };
+            std::vector<ProfiledClassInfo> profiledClassData;
+            if(node->getOpCode().isCallIndirect()) {
+                  TR_ValueProfileInfoManager * profileManager = TR_ValueProfileInfoManager::get(comp());
+                  if (!profileManager) {
+                        // printf(" no profileManager %p\n", this);
+                        continue;
+                  }
+                  TR_AddressInfo *valueInfo = static_cast<TR_AddressInfo*>(profileManager->getValueInfo(node->getByteCodeInfo(), comp(), AddressInfo));
+                  if (!valueInfo) {
+                     // printf(" no valueInfo %p\n", this);
+                     continue;
+                  }
+                  // printf("Came after if condition check: %p\n",this);
+                  TR_ScratchList<TR_ExtraAddressInfo> valuesSortedByFrequency(comp()->trMemory());
+                  valueInfo->getSortedList(comp(), &valuesSortedByFrequency);
+                  ListIterator<TR_ExtraAddressInfo> sortedValuesIt(&valuesSortedByFrequency);
+
+                  uint32_t totalFrequency = valueInfo->getTotalFrequency();
+                  // printf(" Profile Data: Total frequency of %f  at [BCI: %d] \n", (float)totalFrequency, node->getByteCodeIndex());
+                  //((TR_J9InlinerTracer *)inliner->tracer())->dumpProfiledClasses(sortedValuesIt, totalFrequency);
+         
+                  TR_ExtraAddressInfo *profiledInfo;
+                  for (profiledInfo = sortedValuesIt.getFirst(); profiledInfo != NULL; profiledInfo = sortedValuesIt.getNext()) {
+                     int32_t freq = profiledInfo->_frequency;
+                     TR_OpaqueClassBlock* tempreceiverClass = (TR_OpaqueClassBlock *) profiledInfo->_value;
+                     float val = (float)freq/(float)totalFrequency;
+                     int32_t len = 1;
+                     bool isClassObsolete = comp()->getPersistentInfo()->isObsoleteClass((void*)tempreceiverClass, comp()->fe());
+
+                     if(!isClassObsolete)
+                     {
+                        const char *className = TR::Compiler->cls.classNameChars(comp(), tempreceiverClass, len);                        
+                        // printf(" Profile Data: ReceiverClass %s has a profiled frequency of %f (%f%%) at [BCI: %d] \n", className,val, val* 100.0, node->getByteCodeIndex());
+                        
+                        // Store the className, byteCodeIndex, and val in the data structure
+                        // Flag to check if the entry already exists
+                        bool entryExists = false;
+
+                        // Iterate through profiledClassData to check for duplicates
+                        for (const auto& info : profiledClassData) {
+                           if (info.className == className && info.byteCodeIndex == node->getByteCodeIndex() && info.value == val) {
+                              entryExists = true;  // Mark as found
+                              break;  // No need to check further once we find a match
+                           }
+                        }
+
+                        // If the entry does not exist, add it to profiledClassData
+                        if (!entryExists) {
+                           ProfiledClassInfo info;
+                           info.className = className;
+                           info.byteCodeIndex = node->getByteCodeIndex();
+                           info.value = val;
+                           profiledClassData.push_back(info);
+
+                           // printf(" Added new entry: ClassName: %s, ByteCodeIndex: %d, Value: %f\n", info.className.c_str(), info.byteCodeIndex, info.value);
+                        } else {
+                           // printf(" Duplicate entry found, not adding: ClassName: %s, ByteCodeIndex: %d, Value: %f\n", className, node->getByteCodeIndex(), val);
+                        }
+                     }
+                     else
+                     {
+                        // printf(" \t receiverClass %p is obsolete and has profiled frequency of %f at [BCI: %d] \n",tempreceiverClass,val, node->getByteCodeIndex());
+                     }
+                  }
+            }
+            // After the loop, print the data stored in profiledClassData
+            
+            // if (strncmp(comp()->signature(), "SpecOpt", 7) == 0) {
+
+               // Variable to store BCIs if accumulated value exceeds 0.7
+               float accumulatedValue = 0.0f;
+               
+               /* == Debug Code ==  [For printing the info -- profiled data and statically generated.]  */ 
+                  
+               // printf("Opcode Value %s\n", node->getOpCode().getName());
+               // for (const auto& info : profiledClassData) {
+               //    printf("1. ClassName: %s, ByteCodeIndex: %d, Value: %f\n", info.className.c_str(), info.byteCodeIndex, info.value);
+               // }
+                  
+               // // Print the values stored in the map coming statically
+               // for (const auto& entry : TR::Options::_staticAnalysisNonEscapingMap) {
+               //    const std::string& signature = entry.first;
+               //    const std::vector<int32_t>& firstPart = entry.second.first;
+               //    const auto& secondPart = entry.second.second;
+
+               //    printf("Signature: %s\n", signature.c_str());
+               //    printf("First Part: [");
+               //    for (size_t i = 0; i < firstPart.size(); ++i) {
+               //       printf("%d", firstPart[i]);
+               //       if (i < firstPart.size() - 1) printf(", ");
+               //    }
+               //    printf("]\n");
+               //    for (const auto& secondEntry : secondPart) {
+               //       int number = secondEntry.first;
+               //       const std::vector<std::pair<std::vector<std::string>, std::vector<int32_t>>>& entryPairs = secondEntry.second;
+               //       printf("  Number: %d\n", number);
+               //       for (const auto& methodEntry : entryPairs) {
+               //          const std::vector<std::string>& stringList = methodEntry.first;
+               //          const std::vector<int32_t>& indices = methodEntry.second;
+               //          printf("    Strings: {");
+               //          for (size_t i = 0; i < stringList.size(); ++i) {
+               //             printf("%s", stringList[i].c_str());
+               //             if (i < stringList.size() - 1) printf(", ");
+               //          }
+               //          printf("}\n");
+               //          printf("    Indices: [");
+               //          for (size_t i = 0; i < indices.size(); ++i) {
+               //             printf("%d", indices[i]);
+               //             if (i < indices.size() - 1) printf(", ");
+               //          }
+               //          printf("]\n");
+               //       }
+               //    }
+               // }               
+
+               // Loop through profiledClassData
+               for (const auto& info : profiledClassData)
+               {
+                  // Print the current entry               
+                  // Check if className exists in _staticAnalysisNonEscapingMap
+                  auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature());
+                  if (mapEntry != TR::Options::_staticAnalysisNonEscapingMap.end())
+                  {
+                     // Get the second part of the map (unordered_map)
+                     const auto& secondPart = mapEntry->second.second.first;
+                     // Loop through the secondPart (which contains byteCodeIndex and the associated data)
+                     bool found = false;  // Flag to break if we find a match
+                     for (const auto& secondEntry : secondPart)
+                     {
+                        int number = secondEntry.first;  // This is the byteCodeIndex in the map
+                        //printf(" Number is: %d, and BCI is: %d\n", number, info.byteCodeIndex); 
+                        // Check if the number (byteCodeIndex) matches info.byteCodeIndex
+                        if (number == info.byteCodeIndex)
+                        {
+                           // secondEntry.second is a vector of pairs, where each pair has a vector of strings and a vector of indices
+                           const auto& entryPairs = secondEntry.second;
+                           // Loop through the pairs in the entryPairs vector
+                           for (const auto& methodEntry : entryPairs)
+                           {
+                              const std::vector<std::string>& stringList = methodEntry.first;
+                              const std::vector<int32_t>& indices = methodEntry.second;
+                              // Check if the info.className exists in the stringList
+                              if (std::find(stringList.begin(), stringList.end(), info.className) != stringList.end())
+                              {
+                                 // If className is found, accumulate the value
+                                 //printf("Found class Name: %s\n", info.className.c_str());
+                                 accumulatedValue += info.value;
+                                 accumulatedValue = accumulatedValue * 100;
+                                 // If the accumulated value exceeds 0.7, store BCIs
+                                 // printf("Current Threshold: %d\n", TR::Options::_soThreshold);
+                                 //  if (accumulatedValue > 70.0f)
+                                 int bciCurrentValue = static_cast<int>(accumulatedValue); 
+                                 if (bciCurrentValue > TR::Options::_soThreshold)
+                                 {
+                                    // Add all the BCIs from the indices vector to the list
+                                    accumulatedBCIs.insert(accumulatedBCIs.end(), indices.begin(), indices.end());
+                                    // printf("BCI stored based PROFILE INFO: --> ClassName: %s, ByteCodeIndex: %d, Value: %f\n", info.className.c_str(), info.byteCodeIndex, info.value);
+                                 }
+                                 found = true;  // Set found to true, we can break after this
+                              }
+                              // If found, no need to keep searching in the rest of the pairs
+                              if (found)
+                                 break;
+                           }
+                           // Break the loop since we found the matching byteCodeIndex
+                           if (found)
+                              break;
+                        }
+                     }
+                     // If no match was found, you can handle the case here if needed (e.g., continue, log, etc.)
+                     if (!found)
+                     {
+                        // printf("No match found for ClassName: %s with ByteCodeIndex: %d\n", info.className.c_str(), info.byteCodeIndex);
+                     }
+                  }
+                  else
+                  {
+                     // Handle the case where className doesn't exist in _staticAnalysisNonEscapingMap (if needed)
+                     // printf("ClassName %s not found in _staticAnalysisNonEscapingMap\n", info.className.c_str());
+                  }
+               }
+
+               // After the loop, print the total accumulated value  
+               //printf("Total Accumulated Value: %f\n", accumulatedValue);
+
+               // // If the accumulated value exceeded 0.7, print the BCIs stored in the list
+               // if (accumulatedValue > 0.7f)
+               // {
+               //    printf("BCIs where accumulated value exceeded 0.7:\n[");
+               //    for (size_t i = 0; i < accumulatedBCIs.size(); ++i)
+               //    {
+               //       printf("%d", accumulatedBCIs[i]);
+               //       //TR::TreeTop *TR_EscapeAnalysis::_iter;
+               //       for (_iter = comp()->getStartTree(); _iter; _iter = _iter->getNextTreeTop())
+               //       {
+               //          // Get the current node and its BCI
+               //          TR::Node* new_node = _iter->getNode();
+               //          int new_nodeBCI = new_node->getByteCodeIndex();
+               //          // Print the current node's details
+               //          printf("Inside new creating candidate list: Processing the node:\n 1. Method: %s\n 2. BCI: %d\n", comp()->signature(), new_nodeBCI);
+
+               //          // Check if the node's BCI is in the accumulatedBCI
+               //          // if (new_nodeBCI == accumulatedBCIs[i])
+               //          // {
+               //          //    // Create a candidate if valid
+               //          //    printf("Found the BCI for stack allocation\n");
+               //          //    printf("1. Trying to create candidate: %d:", new_nodeBCI);
+               //          //    TR_OpaqueClassBlock* new_classInfo = nullptr;
+               //          //    Candidate* candidate = createCandidateIfValid(new_node, new_classInfo, foundUserAnnotation);
+               //          //    printf("1. Trying to create candidate: %d:", new_nodeBCI);
+               //          //    // If no valid candidate is created, continue to the next iteration
+               //          //    if (!candidate)
+               //          //          continue;
+
+               //          //    // Increment the possible allocations counter
+               //          //    possibleAllocations++;
+               //          //    printf("2. Adding some prop4erties: %d:", new_nodeBCI);
+               //          //    // Check if this BCI is part of the non-escaping objects
+               //          //    if (nonEscapingObjects && nonEscapingObjects->size() &&
+               //          //          std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), new_nodeBCI) != nonEscapingObjects->end())
+               //          //    {
+               //          //          withinRes++;
+               //          //    }
+               //          //    printf("3. Check if the candidate is a valid local allocation: %d:", new_nodeBCI);
+               //          //    // Determine if the candidate is a valid local allocation
+               //          //    candidate->setLocalAllocation(_createStackAllocations && (candidate->_size > 0));
+
+               //          //    // Trace if needed
+               //          //    if (trace())
+               //          //    {
+               //          //          traceMsg(comp(), "[SPECOPT] setting local alloc %p to %s\n", candidate->_node, candidate->isLocalAllocation() ? "true" : "false");
+               //          //    }
+               //          //    // Add the candidate to the list of candidates
+               //          //    printf("4. Added the BCI: %d as candidate in the _candidates\n", new_nodeBCI);
+               //          //    _candidates.add(candidate);
+               //          // }
+               //       }
+
+         }
+      }
+
+
+
+   findCandidates(possibleAllocations, withinRes, accumulatedBCIs);
    cost++;
 
    if (!_candidates.isEmpty())
@@ -1045,7 +1733,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          if (!doEAOpt &&
              comp()->useCompressedPointers())
             {
-            if (candidate->_seenSelfStore || candidate->_seenStoreToLocalObject)
+            if (!(candidate->_optimisticallyNonEscaping) && candidate->_seenSelfStore || candidate->_seenStoreToLocalObject)
                {
                candidate->setLocalAllocation(false);
                if (trace())
@@ -1088,9 +1776,12 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
               candidate->_seenSelfStore ||
               candidate->_seenStoreToLocalObject))
             {
+            if (!checkIfNonEscapingInStaticAnalysis(candidate) || !checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs) || !checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate) )
+            {
             candidate->setLocalAllocation(false);
             if (trace())
                traceMsg(comp(), "   Make [%p] non-local because we can't have locking when candidate escapes in cold blocks\n", candidate->_node);
+            }
             }
 
          // Primitive value type fields of objects created with a NEW bytecode must be initialized
@@ -1288,8 +1979,99 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       cost++;
       }
 
-   if (trace())
-      printCandidates("Final candidates");
+   // AA: Printing all the stack allocated objects 
+   // FILE *outfile = fopen("finalStackAllocation.txt", "a");
+   // if (outfile) {
+   //  Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
+
+   //  if (firstCandidate) {  // Only proceed if there is at least one candidate
+   //      fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+        
+   //      for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
+   //          fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+   //      }
+
+   //      fprintf(outfile, "]\n");  // Close array bracket
+   //  }
+   // }
+
+   // AA: Printing all the stack allocated objects 
+   // FILE *outfile = fopen("categoryStackAllocation.txt", "a");
+   // if (outfile) {
+   //  Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
+   //  std::vector<Candidate*> jitCandidates;
+   //  std::vector<Candidate*> directCandidates;
+   //  std::vector<Candidate*> inlineCandidates;
+   //  std::vector<Candidate*> polyCandidates;
+   //  std::vector<Candidate*> branchCandidates;
+   //  if (firstCandidate) {  // Only proceed if there is at least one candidate
+   //    fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+        
+   //    for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
+   //       if(candidate->_optimisticallyNonEscapinginlining) {
+   //          inlineCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //       } else if(candidate->_optimisticallyNonEscaping) {
+   //          directCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //       } else if (candidate->_optimisticallyNonEscapingconditional) {
+   //          polyCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //       } else if (candidate->_optimisticallyNonEscapingconditionalbranch) {
+   //          branchCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //       } else {
+   //          jitCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //       }
+   //    }
+   //    if(outfile)
+   //       fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+   //      fprintf(outfile, "]\n");  // Close array bracket
+   //  }
+   // }  
+
+   // FILE* outfile2 = fopen("categoryStackAllocation.txt", "a");
+    
+   // if (outfile2) {
+
+   //    Candidate* firstCandidate = _candidates.getFirst();  // Check if there are any candidates
+   //    std::vector<int> jitCandidates;
+   //    std::vector<int> directCandidates;
+   //    std::vector<int> inlineCandidates;
+   //    std::vector<int> polyCandidates;
+   //    std::vector<int> branchCandidates;
+
+   //    if (firstCandidate) {  // Only proceed if there is at least one candidate
+   //       // Write header with signature and hotness
+   //       fprintf(outfile2, "%s [%s]\n", comp()->signature(), comp()->getHotnessName());
+
+   //       for (Candidate* candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
+   //             if (candidate->_optimisticallyNonEscapinginlining) {
+   //                inlineCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //             } else if (candidate->_optimisticallyNonEscaping) {
+   //                directCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //             } else if (candidate->_optimisticallyNonEscapingconditional) {
+   //                polyCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //             } else if (candidate->_optimisticallyNonEscapingconditionalbranch) {
+   //                branchCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //             } else {
+   //                jitCandidates.push_back(candidate->_node->getByteCodeIndex());
+   //             }
+   //       }
+
+   //       // Helper lambda to print a category
+   //       auto printCategory = [&](const char* name, const std::vector<int>& vec) {
+   //             fprintf(outfile2, "[%s: ", name);
+   //             for (int idx : vec) {
+   //                fprintf(outfile2, "%d ", idx);
+   //             }
+   //             fprintf(outfile2, "]");
+   //       };
+
+   //       // Print all categories
+   //       printCategory("JIT", jitCandidates);
+   //       printCategory("Direct", directCandidates);
+   //       printCategory("Inline", inlineCandidates);
+   //       printCategory("Poly", polyCandidates);
+   //       printCategory("Branch", branchCandidates);
+   //       fprintf(outfile2, "\n");
+   //    }
 
    // When we do stack allocation we generate number of stores
    // in the first block of the method, so that we can initialize the
@@ -1331,7 +2113,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
 
    int32_t nonContiguousAllocations = 0;
    int32_t tempsCreatedForColdEscapePoints = 0;
-
+   int32_t stackallocations=0;
    // Now fix up the new nodes themselves and insert any initialization code
    // that is necessary.
    //
@@ -1341,7 +2123,12 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          {
          if (performTransformation(comp(), "%sStack allocating candidate [%p]\n",OPT_DETAILS, candidate->_node))
             {
+            if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
+            stackallocations++;
             //printf("stack allocation in %s %s\n",comp()->signature(),comp()->getHotnessName(comp()->getMethodHotness()));fflush(stdout);
+            TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "StackStatistics/StackAllocatedObjects"), candidate->_treeTop);
+
+            TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "StackStatistics/StackBytes"), candidate->_treeTop, candidate->_size);
 
             if (candidate->isContiguousAllocation())
                {
@@ -1356,7 +2143,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                ++nonContiguousAllocations;
                }
 
-            if (candidate->escapesInColdBlocks())
+            if (candidate->escapesInColdBlocks() && (!checkIfNonEscapingInStaticAnalysis(candidate) || !checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs) || !checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate)))
                {
                // _initializedHeapifiedTemps will contain any autos that are initialized in the entry block of
                // the method.  When the first candidate that escapes in a cold block is encountered, sweep
@@ -1433,6 +2220,19 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                tempsCreatedForColdEscapePoints++;
                }
 
+            const char *allocationMethodSignature =  comp()->signature();
+            if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex())
+            {
+               TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+               allocationMethodSignature = comp()->compileRelocatableCode() ?
+                 (((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+                 (fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
+            }
+            if (candidate->_optimisticallyNonEscaping)
+               TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/Optimistic"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+            else
+               TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/NonOptimistic"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+
             if (candidate->_seenFieldStore)
                _repeatAnalysis = true;
 
@@ -1442,6 +2242,34 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          }
       }
 
+   if (!_candidates.isEmpty())
+   {
+      TR::TreeTop *treeTop, *nextTree;
+      TR::Node *firstOptimisticAllocation = NULL;
+      for (treeTop = comp()->getStartTree(); treeTop; treeTop = nextTree)
+      {
+         nextTree = treeTop->getNextTreeTop();
+         TR::Node *node = treeTop->getNode();
+
+         // Last tree corresponds to first allocation - allocations insert trees at the start of the block
+         if (node->getOpCodeValue() == TR::astorei && node->getFirstChild()->getOpCodeValue() == TR::loadHeapifiableAddr && node->getSymbolReference() == comp()->getSymRefTab()->findVftSymbolRef())
+            firstOptimisticAllocation = node->getFirstChild();
+         if (firstOptimisticAllocation!=NULL && node->getOpCodeValue() == TR::areturn)
+         {
+            TR::TreeTop::create(comp(), treeTop->getPrevTreeTop(),
+               TR::Node::createWithSymRef(TR::possibleHeapificationAtReturn, 2, 2, node->getFirstChild(), firstOptimisticAllocation->duplicateTree(),
+                  comp()->getSymRefTab()->findOrCreateRuntimeHelper(TR_jitHeapifyStackObject, true, true, true)));
+         }
+      }
+   }
+   if (trace()) 
+   {
+      traceMsg(comp(), "Number of objects allocated on stack = %d\n", stackallocations);
+      traceMsg(comp(), "Potential allocations as per res file = %d\n", withinRes);
+      traceMsg(comp(), "Number of possible allocations = %d\n", possibleAllocations);
+      // if (possibleAllocations)
+      // traceMsg(comp(), "Percentage of stack allocations = %.6f\n", ((float)100*stackallocations)/possible_allocations);
+   }
    _somethingChanged |= devirtualizeCallSites();
 
    // If there are any call sites to be inlined, do it now
@@ -1602,16 +2430,22 @@ void TR_EscapeAnalysis::findLocalObjectsValueNumbers(TR::Node *node, TR::NodeChe
    }
 
 
-void TR_EscapeAnalysis::findCandidates()
+void TR_EscapeAnalysis::findCandidates(int &possibleAllocations, int &withinRes, std::vector<int32_t> accumulatedBCIs)
    {
    TR::NodeChecklist visited (comp());
    int32_t     i;
    bool foundUserAnnotation=false;
    const char *className = NULL;
+   std::vector <int32_t> *nonEscapingObjects = NULL;
+   // if (TR::Options::_staticAnalysisNonEscapingMap.size() && TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end())
+   //     nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())]);
+   if (TR::Options::_staticAnalysisNonEscapingMap.size() && TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end())
+       nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].first);
    for (_curTree = comp()->getStartTree(); _curTree; _curTree = _curTree->getNextTreeTop())
       {
       TR::Node    *node = _curTree->getNode();
 
+      //printf("Processing the node : \n 1. Method: %s \n 2. BCI: %d ", comp()->signature(), node->getByteCodeIndex());
       if (visited.contains(node))
          continue;
       visited.add(node);
@@ -1752,6 +2586,9 @@ void TR_EscapeAnalysis::findCandidates()
       Candidate *candidate = createCandidateIfValid(node, classInfo,foundUserAnnotation);
       if (!candidate)
          continue;
+      possibleAllocations++;
+      if (nonEscapingObjects && nonEscapingObjects->size() && std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), node->getByteCodeIndex())!=nonEscapingObjects->end())
+         withinRes++;
       if (dememoizedConstructorCall)
          {
          candidate->_dememoizedMethodSymRef    = dememoizedMethodSymRef;
@@ -1802,8 +2639,40 @@ void TR_EscapeAnalysis::findCandidates()
       {
       comp()->dumpMethodTrees("Trees after finding candidates");
       }
+
+      // reorderCandidates();
    }
 
+void TR_EscapeAnalysis::reorderCandidates() {
+   std::unordered_map<int32_t, std::vector<Candidate *>> candidatesBCIMapping;
+   std::unordered_map<int32_t, std::vector<Candidate *>>::iterator it;
+
+   if(_nonEscapingObjects==NULL) {
+      return;
+   }
+
+   while(!_candidates.isEmpty()) {
+      Candidate *candidate = _candidates.pop();
+      int bci = candidate->_node->getByteCodeIndex();
+      candidatesBCIMapping[bci].push_back(candidate);
+   }
+
+   for(int i=_nonEscapingObjects->size()-1;i>=0;i--) {
+      int bci = (*_nonEscapingObjects)[i];
+      if(candidatesBCIMapping.find(bci)!=candidatesBCIMapping.end()) {
+         for(Candidate* candidate: candidatesBCIMapping[bci]) {
+            _candidates.add(candidate);
+         }
+         candidatesBCIMapping.erase(bci);
+      }
+   }
+
+   for(it = candidatesBCIMapping.begin(); it != candidatesBCIMapping.end(); it++) {
+      for(Candidate* candidate: it->second) {
+         _candidates.add(candidate);
+      }
+   }
+}
 
 Candidate *TR_EscapeAnalysis::createCandidateIfValid(TR::Node *node, TR_OpaqueClassBlock *&classInfo,bool foundUserAnnotation)
    {
@@ -3444,6 +4313,8 @@ void TR_EscapeAnalysis::forceEscape(TR::Node *node, TR::Node *reason, bool force
       next = candidate->getNext();
       if (usesValueNumber(candidate, valueNumber))
          {
+           if ((!forceFail || reason->getOpCodeValue() == TR::areturn) && (checkIfNonEscapingInStaticAnalysis(candidate) || checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs) || checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate)))
+               continue;
          if (!forceFail && checkIfEscapePointIsCold(candidate, reason))
             {
             if (!isImmutableObject(candidate))
@@ -3480,6 +4351,313 @@ void TR_EscapeAnalysis::forceEscape(TR::Node *node, TR::Node *reason, bool force
       }
    }
 
+bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
+{
+   if (candidate->_optimisticallyNonEscaping) return true;
+   // The same candidate may be checked multiple times in the analysis.
+   // If already checked once, then just return.
+   if (!TR::Options::_staticAnalysisNonEscapingMap.size())
+      return false;
+   if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex())
+   {
+      TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+      std::string signature = comp()->compileRelocatableCode() ?
+                 std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+                 std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
+      if (TR::Options::_staticAnalysisNonEscapingMap.find(signature) == TR::Options::_staticAnalysisNonEscapingMap.end())
+         return false;
+      std::vector <int32_t> * nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[signature].first);
+      if (nonEscapingObjects->size()==0 || std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==nonEscapingObjects->end())
+         return false;
+   }
+   else if (_nonEscapingObjects == NULL || _nonEscapingObjects->size()==0 || std::find(_nonEscapingObjects->begin(), _nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==_nonEscapingObjects->end()) {
+      return false;
+   }
+
+   if(trace())
+      traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
+   candidate->setMustBeContiguousAllocation();
+   candidate->_optimisticallyNonEscaping = true;
+   return true;
+}
+
+// bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
+// {
+//    if (candidate->_optimisticallyNonEscaping) 
+//       return true;
+
+//    // Check if the static analysis map is empty
+//    if (!TR::Options::_staticAnalysisNonEscapingMap.size())
+//       return false;
+
+//    // If the candidate has a valid caller index
+
+//    // if (candidate == nullptr || candidate->_node == NULL || _nonEscapingObjects == nullptr ) {
+//    //  return false;
+//    // }
+//    if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex()) 
+//    {
+//       TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+//       std::string signature = comp()->compileRelocatableCode() ?
+//          std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+//          std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
+
+//       // Check if the signature exists in the static analysis map
+//       auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(signature);
+//       if (mapEntry == TR::Options::_staticAnalysisNonEscapingMap.end())
+//          return false;
+
+//       // Get the vector of non-escaping objects (the first element of the pair)
+//       std::vector<int32_t> &nonEscapingObjects = mapEntry->second.first;
+
+//       // Check if the bytecode index is within the list of non-escaping objects
+//       if (nonEscapingObjects.empty() || 
+//          std::find(nonEscapingObjects.begin(), nonEscapingObjects.end(), candidate->_node->getByteCodeIndex()) == nonEscapingObjects.end())
+//       {
+//          return false;
+//       }
+//    } else if (_nonEscapingObjects == NULL || _nonEscapingObjects->empty() || std::find(_nonEscapingObjects->begin(), _nonEscapingObjects->end(), static_cast<int32_t>(candidate->_node->getByteCodeIndex())) == _nonEscapingObjects->end()) {
+//       return false;
+//    }
+//    // If the candidate has no valid caller index, use the current _nonEscapingObjects list
+//    // else if (_nonEscapingObjects == NULL || 
+//    //          _nonEscapingObjects->empty() || 
+//    //          std::find(_nonEscapingObjects->begin(), _nonEscapingObjects->end(), candidate->_node->getByteCodeIndex()) == _nonEscapingObjects->end())
+//    // {
+//    //    return false;
+//    // }
+
+
+
+//    if (trace())
+//       traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
+
+//    candidate->setMustBeContiguousAllocation();
+//    candidate->_optimisticallyNonEscaping = true;
+//    return true;
+// }
+
+// bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
+// {
+//    printf("Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
+//    if (candidate->_optimisticallyNonEscaping) 
+//       return true;
+
+//    // Check if the static analysis map is empty
+//    if (!TR::Options::_staticAnalysisNonEscapingMap.size())
+//       return false;
+
+//    // std::string currentMethodSignature = std::string(comp()->signature());
+//    // std::string signature = currentMethodSignature;
+//    int32_t callInstructionByteCodeForInlinedMethod = -1; // must be greater than 0 to be a valid byteco
+
+//    // If the candidate has a valid caller index
+//    if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex()) { 
+   
+//        // Check if the signature exists in the static analysis map
+//       auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature());
+//       if (mapEntry == TR::Options::_staticAnalysisNonEscapingMap.end())
+//          return false;
+
+//       // Get the vector of non-escaping objects (the first element of the pair)
+//       std::vector<int32_t> &nonEscapingObjects = mapEntry->second.first;
+
+//       /* Check 1: Directly marked for stack allocation.
+//        * Check if the bytecode index is within the list of non-escaping objects
+//        */
+//       if (nonEscapingObjects.empty() || 
+//          std::find(nonEscapingObjects.begin(), nonEscapingObjects.end(), candidate->_node->getByteCodeIndex()) == nonEscapingObjects.end())
+//       {
+//          /* If reached here means the current candidate is not marked directly for stack allocation. 
+//           * Check 2: Check if can be stack allocated if at the call site the method got inlined and statically 
+//           * we have conditionally marked the BCI for stack allocation.
+//           */
+         
+//          TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+//          callInstructionByteCodeForInlinedMethod = ics._byteCodeInfo.getByteCodeIndex();
+//          // Get the signature of the method that can be inlined at the callsite
+//          std::string signature = comp()->compileRelocatableCode() ?
+//          std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+//             std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
+//          printf("Signature we got: %s \n", signature.c_str());
+         
+//          // if (TR::Options::_staticAnalysisNonEscapingMap.find(signature) == TR::Options::_staticAnalysisNonEscapingMap.end())
+//          //    return false;
+//          std::vector <int32_t> * nonEscapingObjects =  &(TR::Options::_staticAnalysisNonEscapingMap[signature].first);
+//          bool is_non_escaping = !(nonEscapingObjects->size()==0 || !std::binary_search(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex()));
+//          if (!is_non_escaping && callInstructionByteCodeForInlinedMethod >= 0) {
+//             //auto x = &(TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second.second[callInstructionByteCodeForInlinedMethod]);
+//             // auto& inliningResultMap = TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second;
+//             // auto x = &(inliningResultMap[callInstructionByteCodeForInlinedMethod]);
+//             auto x = &(_inlining_result[callInstructionByteCodeForInlinedMethod]);
+//             // printf("The x value is %s: ", x );
+//             if (x->find(signature) != x->end()) {
+//                std::vector <int32_t> * nonEscapingObjects = &((*x)[signature]);
+//                // printf("The list of BCI Marked for stack allocation from method %s to method %s: ", signature.c_str(), comp()->signature());
+//                // for (const auto& obj : *nonEscapingObjects) {
+//                //       printf("%d ", nonEscapingObjects[i]);
+//                // }
+//                bool y = !(nonEscapingObjects->size()==0 || find(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==nonEscapingObjects->end());
+//                if (y) {
+//                   is_non_escaping = true; // Written this way to allow breakpointing here to find if implementation working as expected
+//                   printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+//                   candidate->_optimisticallyNonEscapinginlining = true;
+//                } 
+//             } 
+//          }
+
+//          if (!is_non_escaping) {
+//             return false;
+//          }
+//       }
+//    } else if (_nonEscapingObjects == NULL || _nonEscapingObjects->empty() || std::find(_nonEscapingObjects->begin(), _nonEscapingObjects->end(), static_cast<int32_t>(candidate->_node->getByteCodeIndex())) == _nonEscapingObjects->end()) {
+//       return false;
+//    }
+//    if (trace())
+//       traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
+//    printf("==== 1. Optimistically stack allocating node [%p] (BCI %d) based on static analysis ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+//    candidate->setMustBeContiguousAllocation();
+//    candidate->_optimisticallyNonEscaping = true;
+//    return true;
+// }
+
+// bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
+// {
+//    printf("Method: %s and Current Candidate in checkIfNonEscapingInStaticAnalysis is: %d\n",comp()->signature(), candidate->_node->getByteCodeIndex());
+   
+//    if (candidate->_optimisticallyNonEscaping) 
+//       return true;
+
+//    // Check if the static analysis map is empty
+//    if (!TR::Options::_staticAnalysisNonEscapingMap.size())
+//       return false;
+
+//    // If the candidate has a valid caller index
+
+//    // if (candidate == nullptr || candidate->_node == NULL || _nonEscapingObjects == nullptr ) {
+//    //  return false;
+//    // }
+
+//    // [AA]: Inline
+//    std::string currentMethodSignature = std::string(comp()->signature());
+//    std::string signature = currentMethodSignature;
+//    int32_t callInstructionByteCodeForInlinedMethod = -1; // must be greater than 0 to be a valid bytecode
+
+//    if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex()) 
+//    {
+//       TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+//       // printf();
+//       // [AA]: Inline
+//       callInstructionByteCodeForInlinedMethod = ics._byteCodeInfo.getByteCodeIndex();
+//       printf("The BCI value got from ICS is: %d \n", callInstructionByteCodeForInlinedMethod);
+//       std::string signature = comp()->compileRelocatableCode() ?
+//          std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+//          std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
+
+//       printf("Signature we got: %s \n", signature.c_str());
+
+//       // // Check if the signature exists in the static analysis map
+//       // auto mapEntry = TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature);
+//       // if (mapEntry == TR::Options::_staticAnalysisNonEscapingMap.end())
+//       //    return false;
+
+//       // // Get the vector of non-escaping objects (the first element of the pair)
+//       // std::vector<int32_t> &nonEscapingObjects = mapEntry->second.first;
+
+//       // // Check if the bytecode index is within the list of non-escaping objects
+//       // if (nonEscapingObjects.empty() || 
+//       //    std::find(nonEscapingObjects.begin(), nonEscapingObjects.end(), candidate->_node->getByteCodeIndex()) == nonEscapingObjects.end())
+//       // {
+//       //    return false;
+//       // }
+//          // [AA]: Inline
+//       if (TR::Options::_staticAnalysisNonEscapingMap.find(comp()->signature()) == TR::Options::_staticAnalysisNonEscapingMap.end())
+//          return false;
+//       std::vector <int32_t> * nonEscapingObjects =  &(TR::Options::_staticAnalysisNonEscapingMap[signature].first);
+
+//       bool is_non_escaping = !(nonEscapingObjects->size()==0 || !std::binary_search(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex()));
+//       if (!is_non_escaping && callInstructionByteCodeForInlinedMethod >= 0) {
+//          //auto x = &(TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second.second[callInstructionByteCodeForInlinedMethod]);
+//          auto& inliningResultMap = TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second;
+//          auto x = &(inliningResultMap[callInstructionByteCodeForInlinedMethod]);
+         
+//          if (x->find(signature) != x->end()) {
+//             std::vector <int32_t> * nonEscapingObjects = &((*x)[signature]);
+//             bool y = !(nonEscapingObjects->size()==0 || find(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==nonEscapingObjects->end());
+//             if (y) {
+//                printf("Found inside the method");
+//                is_non_escaping = true; // Written this way to allow breakpointing here to find if implementation working as expected
+//             } 
+//          } 
+//       }
+//       if (!is_non_escaping) {
+//          return false;
+//       }
+//    }  
+//    // else if (_nonEscapingObjects == NULL || _nonEscapingObjects->empty() || std::find(_nonEscapingObjects->begin(), _nonEscapingObjects->end(), static_cast<int32_t>(candidate->_node->getByteCodeIndex())) == _nonEscapingObjects->end()) {
+//    //    return false;
+//    // }
+//    // Above else if Commented for inlining check
+
+
+
+
+
+
+//    if (trace())
+//       traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
+//    printf("Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
+//    candidate->setMustBeContiguousAllocation();
+//    candidate->_optimisticallyNonEscaping = true;
+//    return true;
+// }
+
+bool TR_EscapeAnalysis::checkIfNonEscapingInConditinalStaticAnalysis(Candidate *candidate, std::vector<int32_t> accumulatedBCIs) {
+      if (candidate->_optimisticallyNonEscapingconditional) 
+         return true;
+      // Check if the accumulated BCI map is empty
+      if (!accumulatedBCIs.size())
+         return false;
+      // If the candidate is present then return true;
+      if (std::find(accumulatedBCIs.begin(), accumulatedBCIs.end(), candidate->_node->getByteCodeIndex()) != accumulatedBCIs.end())
+      {
+         if (trace())
+          traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
+         // printf("==== 2. Optimistically stack allocating node [%p] (BCI %d) based on static analysis conditional argument ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+         candidate->setMustBeContiguousAllocation();
+         candidate->_optimisticallyNonEscapingconditional = true;
+         return true;   
+      }
+      return false;
+}
+
+
+bool TR_EscapeAnalysis::checkIfNonEscapingInConditinalBranchStaticAnalysis(Candidate *candidate) {
+      // printf("Called checkIfNonEscapingInConditinalBranchStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
+      // Check if the accumulated BCI map is empty
+      if (candidate->_optimisticallyNonEscapingconditionalbranch) 
+         return true;
+      if (!branchaccumulatedBCIs.size())
+         return false;
+      for (int32_t val : branchaccumulatedBCIs) {
+         // printf("Data: %d", val);
+      }
+
+      // Check if the accumulated BCI map is empty
+      if (!branchaccumulatedBCIs.size())
+         return false;
+      // If the candidate is present then return true;
+      if (std::find(branchaccumulatedBCIs.begin(), branchaccumulatedBCIs.end(), candidate->_node->getByteCodeIndex()) != branchaccumulatedBCIs.end())
+      {
+         if (trace())
+          traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis branch conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
+         // printf("==== 3. Optimistically stack allocating node [%p] (BCI %d) based on static analysis branch conditional argument ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+         candidate->setMustBeContiguousAllocation();
+         candidate->_optimisticallyNonEscapingconditionalbranch = true;
+         return true;   
+      }
+      return false;
+}
 
 void TR_EscapeAnalysis::markCandidatesUsedInNonColdBlock(TR::Node *node)
    {
@@ -3653,7 +4831,7 @@ bool TR_EscapeAnalysis::restrictCandidates(TR::Node *node, TR::Node *reason, res
                      break;
                      }
                   }
-               if (!containsSyncMethod)
+                  if (!containsSyncMethod && (!checkIfNonEscapingInStaticAnalysis(candidate) || !checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs) || !checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate) ))
                   {
                   if (trace())
                      traceMsg(comp(), "   Make [%p] non-local because of node [%p]\n", candidate->_node, reason);
@@ -3666,6 +4844,9 @@ bool TR_EscapeAnalysis::restrictCandidates(TR::Node *node, TR::Node *reason, res
 
          if (type == MakeNonLocal)
             {
+            if (checkIfNonEscapingInStaticAnalysis(candidate)) continue;
+            if(checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs))continue;
+            if(checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate))continue;
             if (checkIfEscapePointIsCold(candidate, reason))
                {
                  //candidate->setObjectIsReferenced();
@@ -5141,6 +6322,12 @@ void TR_EscapeAnalysis::checkEscapeViaCall(TR::Node *node, TR::NodeChecklist& vi
                }
             else
                {
+               if (checkIfNonEscapingInStaticAnalysis(candidate))
+                  continue;
+               if(checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs))
+                  continue;
+               if(checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate))
+                  continue;
                // If the escape point is cold, this will not
                // prevent us from stack allocating it. We will compensate
                // for this later
@@ -5528,6 +6715,11 @@ void TR_EscapeAnalysis::fixupTrees()
          if (fixupNode(node, NULL, visited))
             {
             dumpOptDetails(comp(), "%sRemoving tree rooted at [%p]\n",OPT_DETAILS, node);
+            if (trace()) 
+            {
+               if (node->getNumChildren() == 1 && node->getFirstChild()->getOpCodeValue() == TR::possibleHeapification)
+                  traceMsg(comp(), "Removing possibleHeapification node at [%p]\n", node);
+            }
             _somethingChanged=true;
             TR::TransformUtil::removeTree(comp(), treeTop);
             }
@@ -5564,6 +6756,23 @@ bool TR_EscapeAnalysis::fixupNode(TR::Node *node, TR::Node *parent, TR::NodeChec
 
    bool                     removeThisNode = false;
    TR::ResolvedMethodSymbol *calledMethod = NULL;
+
+   if (node->getOpCodeValue() == TR::possibleHeapificationAtReturn) return true;
+   // Remove redundant ones due to inlining etc. Required ones are added after processing final candidates 
+
+   if (node->getNumChildren() == 1 && node->getFirstChild()->getOpCodeValue() == TR::possibleHeapificationAtStore)
+   {
+      child = node->getFirstChild()->getFirstChild();
+      valueNumber = _valueNumberInfo->getValueNumber(child);
+      for (candidate = _candidates.getFirst(); candidate; candidate = candidate->getNext())
+      {
+         if (usesValueNumber(candidate, valueNumber))
+         {
+            if (!(candidate->_optimisticallyNonEscaping)) return true;
+            return false;
+         }
+      }
+   }
 
    // Look for indirect loads or stores for fields of local allocations.
    //
@@ -6018,12 +7227,12 @@ bool TR_EscapeAnalysis::fixupNode(TR::Node *node, TR::Node *parent, TR::NodeChec
          {
          bool notEqual = false;
          candidate = findCandidate(firstValue);
-         if (candidate && ((!candidate->_seenSelfStore && !candidate->_seenStoreToLocalObject && !candidate->escapesInColdBlocks() && !usesValueNumber(candidate, secondValue)) || (node->getSecondChild()->getOpCodeValue() == TR::aconst)))
+         if (candidate && ((!candidate->_seenSelfStore && !candidate->_seenStoreToLocalObject && !candidate->escapesInColdBlocks() && !candidate->_optimisticallyNonEscaping && !usesValueNumber(candidate, secondValue)) || (node->getSecondChild()->getOpCodeValue() == TR::aconst)))
             notEqual = true;
          else
             {
             candidate = findCandidate(secondValue);
-            if (candidate && ((!candidate->_seenSelfStore && !candidate->_seenStoreToLocalObject && !candidate->escapesInColdBlocks() && !usesValueNumber(candidate, firstValue)) || (node->getSecondChild()->getOpCodeValue() == TR::aconst)))
+            if (candidate && ((!candidate->_seenSelfStore && !candidate->_seenStoreToLocalObject && !candidate->escapesInColdBlocks() && !candidate->_optimisticallyNonEscaping &&!usesValueNumber(candidate, firstValue)) || (node->getSecondChild()->getOpCodeValue() == TR::aconst)))
                notEqual = true;
             }
          if (notEqual)
@@ -6110,7 +7319,7 @@ bool TR_EscapeAnalysis::fixupNode(TR::Node *node, TR::Node *parent, TR::NodeChec
       valueNumber = _valueNumberInfo->getValueNumber(synchronizedObject);
       candidate = findCandidate(valueNumber);
       if (candidate &&
-          !candidate->escapesInColdBlocks())
+          !candidate->escapesInColdBlocks() && !candidate->_optimisticallyNonEscaping)
          {
          if (calledMethod)
             {
@@ -6274,7 +7483,7 @@ bool TR_EscapeAnalysis::fixupFieldAccessForContiguousAllocation(TR::Node *node, 
    // fixed in order to support this. FIXME
    //
    if (node->getOpCode().isWrtBar() &&
-       !candidate->escapesInColdBlocks() &&
+       !candidate->escapesInColdBlocks() && !candidate->_optimisticallyNonEscaping &&
        _valueNumberInfo->getValueNumber(node->getFirstChild()) == _valueNumberInfo->getValueNumber(candidate->_node))
       {
         if (candidate->_origKind == TR::New)
@@ -6743,7 +7952,7 @@ void TR_EscapeAnalysis::makeLocalObject(Candidate *candidate)
       comp()->fej9()->initializeLocalArrayHeader(comp(), nodeToUseInInit, insertionPoint);
 
    allocationNode->removeAllChildren();
-   TR::Node::recreate(allocationNode, TR::loadaddr);
+   TR::Node::recreate(allocationNode, ((candidate->_optimisticallyNonEscaping) ? TR::loadHeapifiableAddr : TR::loadaddr));
    allocationNode->setSymbolReference(symRef);
 
    // Insert debug counter for a contiguous allocation.  Counter name is of the form:
@@ -6773,7 +7982,7 @@ void TR_EscapeAnalysis::makeLocalObject(Candidate *candidate)
    if (nodeToUseInInit != allocationNode)
       {
       nodeToUseInInit->removeAllChildren();
-      TR::Node::recreate(nodeToUseInInit, TR::loadaddr);
+      TR::Node::recreate(nodeToUseInInit, ((candidate->_optimisticallyNonEscaping) ? TR::loadHeapifiableAddr : TR::loadaddr));
       nodeToUseInInit->setSymbolReference(symRef);
       if (candidate->escapesInColdBlocks() || candidate->_seenArrayCopy || candidate->_argToCall || candidate->_seenSelfStore || candidate->_seenStoreToLocalObject)
          {
@@ -6854,7 +8063,7 @@ bool TR_EscapeAnalysis::tryToZeroInitializeUsingArrayset(Candidate* candidate, T
             TR::SymbolReference* allocationSymRef = allocationNode->getSymbolReference();
 
             TR::Node* arrayset = TR::Node::createWithSymRef(TR::arrayset, 3, 3,
-               TR::Node::createWithSymRef(allocationNode, TR::loadaddr, 0, new (trHeapMemory()) TR::SymbolReference(comp()->getSymRefTab(), allocationSymRef->getSymbol(), allocationSymRef->getOffset() + candidateHeaderSizeInBytes)),
+               TR::Node::createWithSymRef(allocationNode, ((candidate->_optimisticallyNonEscaping) ? TR::loadHeapifiableAddr : TR::loadaddr), 0, new (trHeapMemory()) TR::SymbolReference(comp()->getSymRefTab(), allocationSymRef->getSymbol(), allocationSymRef->getOffset() + candidateHeaderSizeInBytes)),
                TR::Node::bconst(allocationNode, 0),
                TR::Node::iconst(allocationNode, candidateObjectSizeInBytes),
                comp()->getSymRefTab()->findOrCreateArraySetSymbol());
@@ -7232,7 +8441,7 @@ void TR_EscapeAnalysis::makeContiguousLocalAllocation(Candidate *candidate)
          //
          if (!baseNode)
             {
-            baseNode = TR::Node::createWithSymRef(allocationNode, TR::loadaddr, 0, symRef);
+            baseNode = TR::Node::createWithSymRef(allocationNode, ((candidate->_optimisticallyNonEscaping) ? TR::loadHeapifiableAddr : TR::loadaddr), 0, symRef);
             if (candidate->escapesInColdBlocks() || candidate->_seenArrayCopy || candidate->_argToCall || candidate->_seenSelfStore || candidate->_seenStoreToLocalObject)
                {
                if (candidate->escapesInColdBlocks())
@@ -8479,6 +9688,7 @@ void TR_EscapeAnalysis::printCandidates(const char *title)
    for (Candidate *candidate = _candidates.getFirst(); candidate; candidate = candidate->getNext())
       {
       traceMsg(comp(), "Candidate %d:\n", index++);
+      traceMsg(comp(), "Bytecode index = %d\n", candidate->_node->getByteCodeIndex());
       candidate->print();
       }
    }
