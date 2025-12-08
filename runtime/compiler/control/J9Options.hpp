@@ -540,30 +540,59 @@ class OMR_EXTENSIBLE Options : public OMR::OptionsConnector
 
    static void  printPID();
       
-   // 4th with SPECOPT, Inline and Branch
-   static std::unordered_map< 
-    std::string,
-    std::pair<
-        std::vector<int32_t>, // First part: list of integers
-        std::pair<
-         std::unordered_map<
-            int32_t, // Second part key (e.g., 29)
-            std::vector< // Holds a list of pairs
-                std::pair<
-                    std::vector<std::string>, // List of strings (e.g., SpecOpt Child)
-                    std::vector<int32_t> // List of integers (e.g., [54, 70, 114, 130, 170, 185])
-                >
-            >
-         >,
-        std::pair <
-                std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>>, // Third part: Independent Inlining Result map
-                std::vector<std::tuple<std::vector<int32_t>, std::string, std::vector<int32_t>>> // Fourth part: List of (double, string, vector<int32_t>)
-            >
-        >
+   // // 4th with SPECOPT, Inline and Branch
+   // static std::unordered_map< 
+   //  std::string,
+   //  std::pair<
+   //      std::vector<int32_t>, // First part: list of integers
+   //      std::pair<
+   //       std::unordered_map<
+   //          int32_t, // Second part key (e.g., 29)
+   //          std::vector< // Holds a list of pairs
+   //              std::pair<
+   //                  std::vector<std::string>, // List of strings (e.g., SpecOpt Child)
+   //                  std::vector<int32_t> // List of integers (e.g., [54, 70, 114, 130, 170, 185])
+   //              >
+   //          >
+   //       >,
+   //      std::pair <
+   //              std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>>, // Third part: Independent Inlining Result map
+   //              std::vector<std::tuple<std::vector<int32_t>, std::string, std::vector<int32_t>>> // Fourth part: List of (double, string, vector<int32_t>)
+   //          >
+   //      >
+   //    >
+   // > _staticAnalysisNonEscapingMap;
+ 
+   // 5th with Direct Scalar replacement
+   static std::unordered_map<
+      std::string,
+      std::pair<
+         std::vector<int32_t>, // 1️⃣ First part
+         std::pair<
+               std::unordered_map<
+                  int32_t, // Second part key (e.g., 29)
+                  std::vector<
+                     std::pair<
+                           std::vector<std::string>, // List of strings (e.g., SpecOpt Child)
+                           std::vector<int32_t>      // List of integers (e.g., [54, 70, 114])
+                     >
+                  >
+               >,
+               std::pair<
+                  std::pair<
+                     std::unordered_map<
+                           int32_t,
+                           std::unordered_map<std::string, std::vector<int32_t>>
+                     >, // 3️⃣ Third part
+                     std::vector<
+                           std::tuple<std::vector<int32_t>, std::string, std::vector<int32_t>>
+                     >  // 4️⃣ Fourth part
+                  >,
+                  std::vector<int32_t> // 5️⃣ Fifth part
+               >
+         >
       >
    > _staticAnalysisNonEscapingMap;
-
-
 
 
 

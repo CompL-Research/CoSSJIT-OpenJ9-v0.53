@@ -1425,14 +1425,14 @@ TR::Register *J9::X86::TreeEvaluator::asynccheckEvaluator(TR::Node *node, TR::Co
 //
 TR::Register *J9::X86::TreeEvaluator::newEvaluator(TR::Node *node, TR::CodeGenerator *cg)
    {
-   const char *allocationMethodSignature = cg->comp()->signature();
-   if (!node->getByteCodeInfo().isInvalidCallerIndex())
-   {
-      TR_InlinedCallSite & ics = cg->comp()->getInlinedCallSite(node->getByteCodeInfo().getCallerIndex());
-      allocationMethodSignature = cg->comp()->compileRelocatableCode() ?
-                 (((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(cg->comp()->trMemory(), heapAlloc)) :
-                 (cg->fe()->sampleSignature(ics._methodInfo, 0, 0, cg->comp()->trMemory()));
-   }
+   // const char *allocationMethodSignature = cg->comp()->signature();
+   // if (!node->getByteCodeInfo().isInvalidCallerIndex())
+   // {
+   //    TR_InlinedCallSite & ics = cg->comp()->getInlinedCallSite(node->getByteCodeInfo().getCallerIndex());
+   //    allocationMethodSignature = cg->comp()->compileRelocatableCode() ?
+   //               (((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(cg->comp()->trMemory(), heapAlloc)) :
+   //               (cg->fe()->sampleSignature(ics._methodInfo, 0, 0, cg->comp()->trMemory()));
+   // }
    cg->generateDebugCounter(NULL, TR::DebugCounter::debugCounterName(cg->comp(), "AllocationStatistics/Heap"/*, allocationMethodSignature, node->getByteCodeIndex() */ ));
    TR::Compilation *comp = cg->comp();
    TR::Register *targetRegister = NULL;

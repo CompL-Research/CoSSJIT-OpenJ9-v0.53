@@ -149,6 +149,7 @@ class Candidate : public TR_Link<Candidate>
         _optimisticallyNonEscapinginlining(false),
         _optimisticallyNonEscapingconditional(false),
         _optimisticallyNonEscapingconditionalbranch(false),
+        _optimisticallyScalarReplaced(false),
     	_virtualCallSitesToBeFixed(c->trMemory()),
         _coldBlockEscapeInfo(c->trMemory())
          {
@@ -166,7 +167,12 @@ class Candidate : public TR_Link<Candidate>
 
    bool isLocalAllocation()          {return _flags.testAny(LocalAllocation);}
    bool isContiguousAllocation()     {return mustBeContiguousAllocation() || hasCallSites();}
+   //[AA]
+   bool isNonContiguousAllocation()     {return mustBeNonContiguousAllocation();}
+
    bool mustBeContiguousAllocation() {return _flags.testAny(MustBeContiguous);}
+   //[AA]
+   bool mustBeNonContiguousAllocation() {return _flags.testAny(MustBeNonContiguous);}
    bool isExplicitlyInitialized()    {return _flags.testAny(ExplicitlyInitialized);}
    bool objectIsReferenced()         {return _flags.testAny(ObjectIsReferenced);}
    bool fillsInStackTrace()          {return _flags.testAny(FillsInStackTrace);}
@@ -182,6 +188,8 @@ class Candidate : public TR_Link<Candidate>
 
    void setForceLocalAllocation(bool v = true)       {_flags.set(ForceLocalAllocation, v);}
    void setLocalAllocation(bool v = true)            {_flags.set(LocalAllocation, v);}
+   // [AA]
+   void setMustBeNonContiguousAllocation(bool v = true) {_flags.set(MustBeNonContiguous, v);}
    void setMustBeContiguousAllocation(bool v = true) {_flags.set(MustBeContiguous, v);}
    void setExplicitlyInitialized(bool v = true)      {_flags.set(ExplicitlyInitialized, v);}
    void setObjectIsReferenced(bool v = true)         {_flags.set(ObjectIsReferenced, v);}
@@ -291,6 +299,7 @@ class Candidate : public TR_Link<Candidate>
      bool                    _optimisticallyNonEscapinginlining;
      bool                    _optimisticallyNonEscapingconditional;
      bool                    _optimisticallyNonEscapingconditionalbranch;
+     bool                    _optimisticallyScalarReplaced;
      bool                    _seenStoreToLocalObject;
      bool                    _seenArrayCopy;
      bool                    _argToCall;
@@ -345,6 +354,9 @@ class Candidate : public TR_Link<Candidate>
          ForceLocalAllocation         = 0x00100000,
 
          CallsStringCopy              = 0x00200000,
+
+         // [AA] Using it fort checkinmg if marked for non-contiguous allocation.
+         MustBeNonContiguous          = 0x00080000, // bit 19
          };
    };
 
@@ -517,6 +529,7 @@ class TR_EscapeAnalysis : public TR::Optimization
    std::vector<int32_t> accumulatedBCIs;
    std::vector<int32_t> branchaccumulatedBCIs;
    std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> _inlining_result; 
+   std::vector<int32_t> _staticallymarkedNonContiguousBCIs;
 
    /**
     * Indicates whether stack allocation of \c newvalue operations may be
@@ -629,6 +642,7 @@ class TR_EscapeAnalysis : public TR::Optimization
    bool     checkIfNonEscapingInStaticAnalysis(Candidate *candidate);
    bool     checkIfNonEscapingInConditinalStaticAnalysis(Candidate *candidate, std::vector<int32_t> accumulatedBCIs);
    bool     checkIfNonEscapingInConditinalBranchStaticAnalysis(Candidate *candidate);
+   bool     checkIfMarkedForScalarReplacement(Candidate *candidate);
    void     forceEscape(TR::Node *node, TR::Node *reason, bool forceFail = false);
    bool     restrictCandidates(TR::Node *node, TR::Node *reason, restrictionType);
    //void     referencedField(TR::Node *base, TR::Node *field, bool isStore, bool seenSelfStore = false);

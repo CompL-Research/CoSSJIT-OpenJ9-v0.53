@@ -153,10 +153,12 @@ TR_EscapeAnalysis::TR_EscapeAnalysis(TR::OptimizationManager *manager)
    
    if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
       _nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].first);
-      _inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first;
+      _inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first.first;
+      _staticallymarkedNonContiguousBCIs = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.second;
    } else {
       _nonEscapingObjects = nullptr;
       _inlining_result.clear();
+      _staticallymarkedNonContiguousBCIs.clear();
    }
    
    _dememoizationSymRef = NULL;
@@ -298,6 +300,7 @@ int32_t TR_EscapeAnalysis::perform()
 
    // under HCR we can protect the top level sniff with an HCR guard
    // nested sniffs are not currently supported
+   // [AA] With hot code replacement (HCR), limit depth to 1 (to avoid unsafe optimizations). 
    if (comp()->getHCRMode() != TR::none)
       _maxSniffDepth = 1;
 
@@ -358,7 +361,7 @@ int32_t TR_EscapeAnalysis::perform()
          traceMsg(comp(), "Disallowing monitor-removal because of strange monitor structure\n");
       }
 #endif
-
+   // [AA] Analysis Invoked
    cost = performAnalysisOnce();
 
    if (!_callsToProtect->empty() && manager()->numPassesCompleted() < _maxPassNumber)
@@ -826,7 +829,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
    if (mapEntry != TR::Options::_staticAnalysisNonEscapingMap.end())
    {
       // Get the fourth part of the map 
-      const auto& fourthPart = mapEntry->second.second.second.second;
+      const auto& fourthPart = mapEntry->second.second.second.first.second;
       for (const auto& tuple : fourthPart) {
          const std::vector<int32_t>& firstVector = std::get<0>(tuple);
          const std::string& stringValue = std::get<1>(tuple);
@@ -1381,7 +1384,16 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
 
    findCandidates(possibleAllocations, withinRes, accumulatedBCIs);
    cost++;
-
+   // [AA] Check if can be marked for scalar replacement
+   if (!_candidates.isEmpty()) {
+      for (candidate = _candidates.getFirst(); candidate; candidate = next)
+      {
+         next = candidate->getNext();
+         if (checkIfMarkedForScalarReplacement(candidate))
+            continue;
+      }
+   }
+   
    if (!_candidates.isEmpty())
       {
       _useDefInfo = optimizer()->getUseDefInfo();
@@ -1444,10 +1456,13 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          {
          TR_FlowSensitiveEscapeAnalysis flowSensitiveAnalysis(comp(), optimizer(), comp()->getFlowGraph()->getStructure(), this);
          }
-
-      bool ignoreRecursion = false;
-      checkEscape(comp()->getStartTree(), false, ignoreRecursion);
-      cost++;
+        
+         // [AA]
+         if (!checkIfMarkedForScalarReplacement(candidate)) {
+            bool ignoreRecursion = false;
+            checkEscape(comp()->getStartTree(), false, ignoreRecursion);
+            cost++;
+         }
       }
 
    //fixup those who have virtual calls
@@ -1459,6 +1474,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          continue;
 
       if (!candidate->hasVirtualCallsToBeFixed())
+         continue;
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
          continue;
 
       dumpOptDetails(comp(), "Fixup indirect calls sniffed for candidate =%p\n",candidate->_node);
@@ -1505,6 +1523,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       next = candidate->getNext();
       if (!candidate->isLocalAllocation())
          continue;
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
+         continue;
 
       TR::TreeTop *callSite, *callSiteNext = NULL;
 
@@ -1547,7 +1568,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
    for (candidate = _candidates.getFirst(); candidate; candidate = next)
       {
       next = candidate->getNext();
-
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
+         continue;
       if (candidate->_dememoizedConstructorCall)
          {
          if (  candidate->isLocalAllocation()
@@ -1621,7 +1644,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          next = candidate->getNext();
          if (!candidate->isLocalAllocation())
             continue;
-
+         // [AA]
+         if (checkIfMarkedForScalarReplacement(candidate))
+            continue;
          if (trace())
              traceMsg(comp(), "   0 Look at [%p] must be %d\n", candidate->_node, candidate->mustBeContiguousAllocation());
 
@@ -1726,7 +1751,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
    for (candidate = _candidates.getFirst(); candidate; candidate = next)
       {
       next = candidate->getNext();
-
+      // [AA]
+      // if (checkIfMarkedForScalarReplacement(candidate))
+      //    continue;
       if (candidate->_kind == TR::New || candidate->_kind == TR::newvalue)
          {
          static bool doEAOpt = feGetEnv("TR_DisableEAOpt") ? false : true;
@@ -1952,7 +1979,9 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       for (candidate = _candidates.getFirst(); candidate; candidate = next)
          {
          next = candidate->getNext();
-
+         // [AA]
+         // if (checkIfMarkedForScalarReplacement(candidate))
+         //    continue;
          if (!candidate->isLocalAllocation())
             {
             continue;
@@ -1980,20 +2009,20 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       }
 
    // AA: Printing all the stack allocated objects 
-   // FILE *outfile = fopen("finalStackAllocation.txt", "a");
-   // if (outfile) {
-   //  Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
+   FILE *outfile = fopen("finalStackAllocation.txt", "a");
+   if (outfile) {
+    Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
 
-   //  if (firstCandidate) {  // Only proceed if there is at least one candidate
-   //      fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+    if (firstCandidate) {  // Only proceed if there is at least one candidate
+        fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
         
-   //      for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
-   //          fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
-   //      }
+        for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
+            fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+        }
 
-   //      fprintf(outfile, "]\n");  // Close array bracket
-   //  }
-   // }
+        fprintf(outfile, "]\n");  // Close array bracket
+    }
+   }
 
    // AA: Printing all the stack allocated objects 
    // FILE *outfile = fopen("categoryStackAllocation.txt", "a");
@@ -2123,19 +2152,26 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          {
          if (performTransformation(comp(), "%sStack allocating candidate [%p]\n",OPT_DETAILS, candidate->_node))
             {
-            if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
             stackallocations++;
             //printf("stack allocation in %s %s\n",comp()->signature(),comp()->getHotnessName(comp()->getMethodHotness()));fflush(stdout);
             TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "StackStatistics/StackAllocatedObjects"), candidate->_treeTop);
 
             TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "StackStatistics/StackBytes"), candidate->_treeTop, candidate->_size);
 
-            if (candidate->isContiguousAllocation())
+            if(candidate->_optimisticallyScalarReplaced || candidate->isNonContiguousAllocation()) {
+               printf("Scalar Replacement in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
+               if (trace()) traceMsg(comp(), "Scalar Replacement - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
+               makeNonContiguousLocalAllocation(candidate);
+               ++nonContiguousAllocations;
+            } else if (candidate->isContiguousAllocation())
                {
                if (candidate->_stringCopyNode && (candidate->_stringCopyNode != candidate->_node))
                   avoidStringCopyAllocation(candidate);
                else
                   makeContiguousLocalAllocation(candidate);
+                  if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
+                  printf("stack allocation in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
+
                }
             else
                {
@@ -2437,10 +2473,14 @@ void TR_EscapeAnalysis::findCandidates(int &possibleAllocations, int &withinRes,
    bool foundUserAnnotation=false;
    const char *className = NULL;
    std::vector <int32_t> *nonEscapingObjects = NULL;
+   // [AA]
+   std::vector <int32_t> *staticallymarkedNonContiguousBCIs = NULL;
    // if (TR::Options::_staticAnalysisNonEscapingMap.size() && TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end())
    //     nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())]);
    if (TR::Options::_staticAnalysisNonEscapingMap.size() && TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end())
        nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].first);
+       // [AA]
+       staticallymarkedNonContiguousBCIs = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.second);
    for (_curTree = comp()->getStartTree(); _curTree; _curTree = _curTree->getNextTreeTop())
       {
       TR::Node    *node = _curTree->getNode();
@@ -2588,6 +2628,9 @@ void TR_EscapeAnalysis::findCandidates(int &possibleAllocations, int &withinRes,
          continue;
       possibleAllocations++;
       if (nonEscapingObjects && nonEscapingObjects->size() && std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), node->getByteCodeIndex())!=nonEscapingObjects->end())
+         withinRes++;
+      // [AA]
+      if (staticallymarkedNonContiguousBCIs && staticallymarkedNonContiguousBCIs->size() && std::find(staticallymarkedNonContiguousBCIs->begin(), staticallymarkedNonContiguousBCIs->end(), node->getByteCodeIndex())!=staticallymarkedNonContiguousBCIs->end())
          withinRes++;
       if (dememoizedConstructorCall)
          {
@@ -4311,6 +4354,9 @@ void TR_EscapeAnalysis::forceEscape(TR::Node *node, TR::Node *reason, bool force
    for (candidate = _candidates.getFirst(); candidate; candidate = next)
       {
       next = candidate->getNext();
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
+         continue;
       if (usesValueNumber(candidate, valueNumber))
          {
            if ((!forceFail || reason->getOpCodeValue() == TR::areturn) && (checkIfNonEscapingInStaticAnalysis(candidate) || checkIfNonEscapingInConditinalStaticAnalysis(candidate, accumulatedBCIs) || checkIfNonEscapingInConditinalBranchStaticAnalysis(candidate)))
@@ -4659,6 +4705,33 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInConditinalBranchStaticAnalysis(Candi
       return false;
 }
 
+bool TR_EscapeAnalysis::checkIfMarkedForScalarReplacement(Candidate *candidate) {
+      // printf("Called checkIfNonEscapingInConditinalBranchStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
+      // Check if the accumulated BCI map is empty
+      if (candidate) {
+         if(candidate->_optimisticallyScalarReplaced) 
+            return true;
+
+         int32_t bci = candidate->_node->getByteCodeIndex();
+
+         bool isNonContiguous = std::find(_staticallymarkedNonContiguousBCIs.begin(), _staticallymarkedNonContiguousBCIs.end(), bci) != _staticallymarkedNonContiguousBCIs.end();
+
+         if (isNonContiguous) {
+            if (trace())
+               traceMsg(comp(), "5. Optimistically replacing the node [%p] (BCI %d) to scalars based on static analysis results \n", candidate->_node, candidate->_node->getByteCodeIndex());
+            printf("==== 5. Optimistically replacing the node [%p] (BCI %d) to scalars based on static analysis results ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+            candidate->setMustBeNonContiguousAllocation();
+            candidate->_optimisticallyScalarReplaced = true;
+            return true;   
+         }
+         return false;
+      } else {
+         return false;
+      }
+}
+
+
+
 void TR_EscapeAnalysis::markCandidatesUsedInNonColdBlock(TR::Node *node)
    {
    TR::Node *resolvedNode = resolveSniffedNode(node);
@@ -4791,8 +4864,12 @@ bool TR_EscapeAnalysis::restrictCandidates(TR::Node *node, TR::Node *reason, res
          {
          if (reason->getOpCodeValue() == TR::arraycopy)
             candidate->_seenArrayCopy = true;
+         
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
+         continue;
 
-         if (locked)
+      if (locked)
             {
             if (!_inColdBlock)
                {
@@ -5239,6 +5316,10 @@ void TR_EscapeAnalysis::checkEscape(TR::TreeTop *firstTree, bool isCold, bool & 
    for (treeTop = firstTree; treeTop && !_candidates.isEmpty(); treeTop = treeTop->getNextTreeTop())
       {
       node = treeTop->getNode();
+      // [AA]
+      // Indriect Store: (astorei, istorei, fstorei) Store into memory via a reference or address (a.f = 10; or arr[i] = v;)
+      // First Check: Objective: If candidate B is being initialized from candidate A (string copy), merge their alias/value-number 
+      // sets so EA knows they are the same object.
       if (node->getOpCode().isStoreIndirect() && detectStringCopy(node))
          {
          TR::Node *baseNode = node->getFirstChild();
@@ -5266,6 +5347,7 @@ void TR_EscapeAnalysis::checkEscape(TR::TreeTop *firstTree, bool isCold, bool & 
                }
             }
          }
+      // Second Check: This dead code !!!! 
       else if (0 && (node->getOpCodeValue() != TR::call) &&
                (node->getNumChildren() > 0))
          {
@@ -5604,7 +5686,7 @@ void TR_EscapeAnalysis::checkEscapeViaNonCall(TR::Node *node, TR::NodeChecklist&
 
          if (  argument
             && doit
-            && (callNode->getOpCodeValue() == TR::acall || callNode->getOpCodeValue() == TR::acalli)
+            && (callNode->getOpCodeValue() == TR::acall || callNode->getOpCodeValue() == TR::acalli) //[AA] if the call was direct or induirect.
             && _sniffDepth == 1 // Note: this only goes one level deep.  If a returns it to b which returns it to the caller, we'll call that an escape.
             && performTransformation(comp(), "%sPeeked method call [%p] returning argument [%p] NOT considered an escape\n", OPT_DETAILS, callNode, argument))
             {
@@ -6593,7 +6675,9 @@ void TR_EscapeAnalysis::checkObjectSizes()
       next = candidate->getNext();
       if (!candidate->isLocalAllocation())
          continue;
-
+      // [AA]
+      if (checkIfMarkedForScalarReplacement(candidate))
+         continue;
       // Make sure contiguous objects are not too big
       //
       if (candidate->isContiguousAllocation())
@@ -7598,6 +7682,9 @@ TR::Node *TR_EscapeAnalysis::createConst(TR::Compilation *comp, TR::Node *node, 
    return result;
    }
 
+// [AA] fixupFieldAccessForNonContiguousAllocation ensures that all field or array element accesses of a candidate object (one proven eligible for non-contiguous 
+// stack allocation) are replaced with direct accesses to compiler-generated temporaries.
+// This allows the object to live in stack slots (non-contiguous) instead of as a single block or heap object.
 
 bool TR_EscapeAnalysis::fixupFieldAccessForNonContiguousAllocation(TR::Node *node, Candidate *candidate, TR::Node *parent)
    {
@@ -8296,7 +8383,7 @@ void TR_EscapeAnalysis::makeContiguousLocalAllocation(Candidate *candidate)
             int32_t zeroInitOffset = node->getSymbolReference()->getOffset();
 
             // If this is a zero-initialization for a collectable field, remove
-            // it since the initialization will be done at the start of the
+            // it since the initialization wil  1. Direct Stack Allocation: [6, 14, 49]l be done at the start of the
             // method.  Don't do this for allocations that are inside loops, since
             // for these allocations the initialization must happen every time
             // round the loop.
@@ -8511,6 +8598,18 @@ void TR_EscapeAnalysis::makeNonContiguousLocalAllocation(Candidate *candidate)
       traceMsg(comp(),"Pass: (%d) Non-contiguous allocation found in %s\n", manager()->numPassesCompleted(), comp()->signature());
       //printf("Pass: (%d) Non-contiguous allocation found in %s\n", manager()->numPassesCompleted(), comp()->signature());
       }
+   // [AA]
+   printf("Pass: (%d) Non-contiguous allocation [Candidate: %d] found in %s\n", manager()->numPassesCompleted(), candidate->_node->getByteCodeIndex(), comp()->signature());
+
+   // AA: Added a debug counter for counting scalar replacement.
+   TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/ScalarReplaced"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+   // AA: Printing all the scalar-replaced objects 
+   FILE *outfile = fopen("finalScalarReplacementj9-v-53.txt", "a");
+   if (outfile) {
+      fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+      fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+      fprintf(outfile, "]\n");  // Close array bracket
+   }
 
    if (candidate->_node->getOpCodeValue() == TR::newvalue)
       {
@@ -8564,6 +8663,10 @@ void TR_EscapeAnalysis::makeNonContiguousLocalAllocation(Candidate *candidate)
    //   - For TR::New and TR::newvalue, a local object of type "java/lang/Object" is created;
    //   - For arrays, a local array of length zero is created
    //
+   // [AA] If candidate->objectIsReferenced() is true, the escape-analysis transform cannot completely
+   // remove the allocation because some part of the program needs an actual object reference 
+   // (e.g., the object’s address is taken, it’s passed to something that expects an Object, used in monitorenter/monitorexit, instanceof, etc.).
+
    if (candidate->objectIsReferenced())
       {
       if ((candidate->_kind == TR::New) || (candidate->_kind == TR::newvalue))
@@ -8590,6 +8693,7 @@ void TR_EscapeAnalysis::makeNonContiguousLocalAllocation(Candidate *candidate)
          }
       else
          {
+         // [AA]: Converts an array allocation into a zero-length discontiguous array.
          candidate->_origSize = candidate->_size;
          candidate->_origKind = candidate->_kind;
 
@@ -8616,6 +8720,7 @@ void TR_EscapeAnalysis::makeNonContiguousLocalAllocation(Candidate *candidate)
 
   else
       {
+      //[AA] If the object was not referenced
       // Insert debug counter for a noncontiguous allocation.  Counter name is of the form:
       //
       //    escapeAnalysis/noncontiguous-allocation/<hotness>/<outermost-method-sig>/(<inlined-method-sig>)/(<bc-caller-index,bc-offset>)
@@ -8656,9 +8761,11 @@ void TR_EscapeAnalysis::heapifyForColdBlocks(Candidate *candidate)
       traceMsg(comp(),"Found candidate allocated with cold block compensation in %s numBlocks compensated = %d\n", comp()->signature(), candidate->getColdBlockEscapeInfo()->getSize());
       //printf("Found candidate allocated with cold block compensation in %s numBlocks compensated = %d\n", comp()->signature(), candidate->getColdBlockEscapeInfo()->getSize());
       }
-
+   // [AA]Creates a temporary symbol in the compiler to store the heap pointer of the object.
+   // [AA] This will be used for stack-to-heap redirection.
    TR::SymbolReference *heapSymRef = getSymRefTab()->createTemporary(comp()->getMethodSymbol(), TR::Address);
 
+   //[AA] Inserts code to store the allocated object into the heap symbol immediately after the original allocation.
    TR::TreeTop *allocationTree = candidate->_treeTop;
    TR::TreeTop *nextTree = allocationTree->getNextTreeTop();
    TR::Node *heapSymRefStore = TR::Node::createWithSymRef(TR::astore, 1, 1, candidate->_node, heapSymRef);
@@ -8676,6 +8783,8 @@ void TR_EscapeAnalysis::heapifyForColdBlocks(Candidate *candidate)
       //   candidate->_originalAllocationNode->setCannotTrackLocalUses(true);
       }
 
+   // [AA] Loops over each cold block where the stack object escapes.
+   // [AA] Prepares to insert heapification logic for each block.
    ListIterator<TR_ColdBlockEscapeInfo> coldBlockInfoIt(candidate->getColdBlockEscapeInfo());
    TR_ColdBlockEscapeInfo *info;
    TR::CFG *cfg = comp()->getFlowGraph();
@@ -8683,7 +8792,8 @@ void TR_EscapeAnalysis::heapifyForColdBlocks(Candidate *candidate)
       {
       // Invalidate structure if adding blocks; can be repaired probably in this
       // case if needed in the future
-      //
+      //[AA] Invalidates control-flow graph (CFG) structure because 
+      //[AA] we are about to insert new nodes and blocks. 
       comp()->getFlowGraph()->setStructure(NULL);
 
 
@@ -9716,6 +9826,7 @@ void Candidate::print()
       traceMsg(comp(), "   Flags = {");
       PRINT_FLAG(comp(), isLocalAllocation, "LocalAllocation");
       PRINT_FLAG(comp(), mustBeContiguousAllocation, "MustBeContiguous");
+      PRINT_FLAG(comp(), mustBeNonContiguousAllocation, "MustBeNonContiguous");
       PRINT_FLAG(comp(), isExplicitlyInitialized, "ExplicitlyInitialized");
       PRINT_FLAG(comp(), objectIsReferenced, "ObjectIsReferenced");
       PRINT_FLAG(comp(), fillsInStackTrace, "FillsInStackTrace");
