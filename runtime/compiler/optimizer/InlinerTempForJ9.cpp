@@ -353,6 +353,10 @@ TR_J9InlinerPolicy::alwaysWorthInlining(TR_ResolvedMethod * calleeMethod, TR::No
 
    if (isJSR292AlwaysWorthInlining(calleeMethod))
       return true;
+   
+   // if((isMarkedbyStaticAnalysis(calleeMethod, callNode))) {
+   //    return true;
+   // }
 
    switch (calleeMethod->getRecognizedMethod())
       {
@@ -2897,7 +2901,52 @@ TR_J9InlinerPolicy::isInlineableJNI(TR_ResolvedMethod *method,TR::Node *callNode
    return false;
    }
 
-//first check J9 specific tryToInline methods and then general tryToInline methods
+//    bool
+// TR_J9InlinerPolicy::isMarkedbyStaticAnalysis(TR_ResolvedMethod *method,TR::Node *callNode)
+//    {
+
+//       // [AA]
+//       std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> _inlining_result; 
+//       if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
+//       _inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first.first;
+//       }
+
+//       bool found = false;
+      
+//       printf(" Inside isMarkedbyStaticAnalysis: The current Method is: %s ==== \n",comp()->signature());
+//       printf(" The JIT Callee Name: %s \n", method->signature(comp()->trMemory(), heapAlloc));
+//       const char* extName = method->signature(comp()->trMemory(), heapAlloc);
+//       std::string calleeName(extName);
+//       // 3. Iterate over the static result and see if there is callee result if yes then continue and do the inlining.
+//       if(callNode->getByteCodeIndex() != null) {
+//          int32_t jit_bc = callNode->getByteCodeIndex();
+//          auto bci_exists = _inlining_result.find(jit_bc);
+//          if (bci_exists != _inlining_result.end()) {
+//             const auto &callee = bci_exists->second;
+
+//             auto innerIt = callee.find(calleeName);
+//             if (innerIt != callee.end()) {
+//                const std::vector<int32_t> &values = innerIt->second;
+//                printf(" FOUND !!!!! Static Analysis results says inline \n");
+//                // callStack->_maxCallSize = (uint32_t)callStack->_maxCallSize * 2;
+//                found= true;
+//                return true;
+//             } else {
+//                // printf("Static Analysis results: callee not found!!! ");
+//                return false;
+//             }
+//          } else {
+//             // printf("NO Static Analysis results found ");
+//             return false;
+//          }
+//       } else {
+//          return false;
+//       }
+
+//       return false;
+//    }
+
+      //first check J9 specific tryToInline methods and then general tryToInline methods
 bool
 TR_J9InlinerPolicy::tryToInline(TR_CallTarget * calltarget, TR_CallStack * callStack, bool toInline)
    {
@@ -4148,6 +4197,7 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
    TR_J9InlinerPolicy *j9inlinerPolicy = (TR_J9InlinerPolicy *) getPolicy();
    TR_InlinerDelimiter delimiter(tracer(), "weighCallSite");
 
+   printf(" == Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets()); fflush(stdout);
    for (int32_t k = 0; k < callsite->numTargets(); k++)
       {
       int32_t size = 0;
@@ -4160,6 +4210,13 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
 
       TR_CallTarget *calltarget = callsite->getTarget(k);
 
+      // // 2. Get the callee name
+      TR_ResolvedMethod* jit_callee_name = calltarget->_calleeMethod;
+      // Convert to string key
+      const char* extName = jit_callee_name->signature(comp()->trMemory(), heapAlloc);
+      std::string calleeName(extName);
+      printf(" The JIT Callee Name: %s\n", calleeName.c_str());
+      
       //for partial inlining:
       calltarget->_originatingBlock = callsite->_callNodeTreeTop->getEnclosingBlock();
 
