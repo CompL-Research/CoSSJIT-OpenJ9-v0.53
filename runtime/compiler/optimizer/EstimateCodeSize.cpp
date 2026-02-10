@@ -97,6 +97,7 @@ TR_EstimateCodeSize::calculateCodeSize(TR_CallTarget *calltarget, TR_CallStack *
 
    {
    TR::StackMemoryRegion stackMemoryRegion(*comp()->trMemory());
+   heuristicTrace(tracer(), "  ===> [AA] Calling estimateCodeSize \n");
    retval = estimateCodeSize(calltarget, callStack, recurseDown);
    } // Stack memory region scope
 
@@ -133,7 +134,7 @@ bool
 TR_EstimateCodeSize::isInlineable(TR_CallStack * prevCallStack, TR_CallSite *callsite)
    {
    TR_ASSERT(callsite, "Estimate Code Size: callsite is null!");
-
+   heuristicTrace(tracer(), "  ===> [AA] Inside isInlinable \n");
    heuristicTrace(tracer(),"Depth %d: Created Call Site %p for call found at bc index %d. Signature %s  Looking for call targets.",
                              _recursionDepth, callsite, callsite->_byteCodeIndex, tracer()->traceSignature(callsite));
 

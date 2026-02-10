@@ -1253,7 +1253,10 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
 
    bool firstInstanceOfCheckFailed = false;
    int32_t totalFrequency = valueInfo->getTotalFrequency();
-
+   
+   // [AA]
+   // TR_OpaqueClassBlock* receivedType = checkIfStaticAnalysisCanSuggest(sortedValuesIt, valueInfo, inliner);    
+   checkIfStaticAnalysisCanSuggest(sortedValuesIt, valueInfo, inliner); 
 
    for (TR_ExtraAddressInfo *profiledInfo = sortedValuesIt.getFirst(); profiledInfo != NULL; profiledInfo = sortedValuesIt.getNext())
       {
@@ -1284,11 +1287,13 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
             }
          }
 
-
+      if (comp()->trace(OMR::inlining))
+         traceMsg(comp(), "  ===>[AA] Inside (findSingleProfiledReceiver) Profile Value: %d\n", freq);
+ 
       static const char* userMinProfiledCallFreq = feGetEnv("TR_MinProfiledCallFrequency");
       static const float minProfiledCallFrequency = userMinProfiledCallFreq ? atof (userMinProfiledCallFreq) :
          comp()->getOption(TR_DisableMultiTargetInlining) ? MIN_PROFILED_CALL_FREQUENCY : .10f;
-
+      // [AA] Look Into
       if ((val >= minProfiledCallFrequency ||
                (firstInstanceOfCheckFailed && val >= SECOND_BEST_MIN_CALL_FREQUENCY)) &&
           !comp()->getPersistentInfo()->isObsoleteClass((void*)tempreceiverClass, comp()->fe()))
@@ -1400,6 +1405,108 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
       }
 
    }
+
+void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>& sortedValuesIt, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner)
+{
+   
+   heuristicTrace(inliner->tracer(),"  1. Inside check checkIfStaticAnalysisCanSuggest for Method %s\n", comp()->signature());
+   
+   // Static Analysis Map for Inlining
+   std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> static_inlining_result; 
+
+   // Map to store the final Status
+   std::unordered_map<std::string, size_t> classCountMap;
+
+   // Reading the analysis result 
+   if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
+      static_inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first.first;
+   }
+
+   for (TR_ExtraAddressInfo *profiledInfo = sortedValuesIt.getFirst(); profiledInfo != NULL; profiledInfo = sortedValuesIt.getNext())
+   {
+      // Exact Frequency for this type
+      int32_t freq = profiledInfo->_frequency;
+
+      // Class Name
+      TR_OpaqueClassBlock* tempreceiverClass = (TR_OpaqueClassBlock *) profiledInfo->_value;
+
+      // Get the percentage for the profile 
+      float val = (float)freq/(float)valueInfo->getTotalFrequency();        //x87 hardware rounds differently if you leave this division in compare
+      
+      // Byte Code for the callsite 
+      TR_ByteCodeInfo &bcInfo = _bcInfo;
+      int32_t jit_bc = bcInfo.getByteCodeIndex();
+      
+      // For checks
+      int32_t len = 1;
+      bool isClassObsolete = comp()->getPersistentInfo()->isObsoleteClass((void*)tempreceiverClass, comp()->fe());
+
+      if(!isClassObsolete)
+      {
+         // Class Name as string
+         const char *className = TR::Compiler->cls.classNameChars(comp(), tempreceiverClass, len);
+         if (comp()->trace(OMR::inlining)) {
+            heuristicTrace(inliner->tracer(),"  2.  Inside (checkIfStaticAnalysisCanSuggest) Exact Profile Value: %d\n", freq);
+            heuristicTrace(inliner->tracer(),"  3.  Inside (checkIfStaticAnalysisCanSuggest) Type: %s\n", className);
+            heuristicTrace(inliner->tracer(),"  4.  Inside (checkIfStaticAnalysisCanSuggest) Value: %f\n", val);
+         }
+         auto bci_exists =  static_inlining_result.find(jit_bc);
+         if (bci_exists != static_inlining_result.end()) {
+            const auto &callee = bci_exists->second;
+            // Create a String from className char array
+            std::string classNameStr(className, len);
+            // This code just removes trailing control characters (like:/ or whitespace)
+            while (!classNameStr.empty() &&
+                  (std::isspace((unsigned char)classNameStr.back()) ||
+                     std::iscntrl((unsigned char)classNameStr.back()))) {
+               classNameStr.pop_back();
+            }
+            bool found = false;
+            size_t count = 0;
+            for (const auto &entry : callee) {
+               const std::string &methodSig = entry.first;
+               const std::vector<int32_t> &vec = entry.second;
+               
+               // Remove the leading spaces safely
+               size_t pos = 0;
+               while (pos < methodSig.size() &&
+                     std::isspace((unsigned char)methodSig[pos])) {
+                  pos++;
+               }
+
+               std::string prefix = classNameStr + ".";
+               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  5. Method Sig is: %s and Callee is: %s and %s\n", methodSig, prefix, classNameStr); }
+               // Compare 
+               if (methodSig.compare(pos, prefix.size(), prefix) == 0) {
+                     found = true;
+                     count += vec.size();
+               }
+            }
+            if (found) {
+               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  ===>[AA]  FOUND !!!!! Static Analysis inlining result for %s at BCI: %d, nof of Probable SA: %d \n",className, jit_bc, count); }
+               classCountMap[classNameStr] = count;
+            } else {
+               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  ===>[AA]  Static Analysis results: callee not found!!! "); }
+            }
+         } else {
+               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  ===>[AA]  NO Static Analysis results found "); }
+         }
+      } 
+      else
+      {
+          if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(), " ===>[AA] Inside (checkIfStaticAnalysisCanSuggest) receiverClass %p is obsolete and has profiled frequency of %f",tempreceiverClass,val); }
+      }   
+   }
+
+   if (comp()->trace(OMR::inlining)) {
+      heuristicTrace(inliner->tracer(),"  ===>[AA] Final Static Analysis inlining suggestions: \n");
+      for (const auto &entry : classCountMap) {
+         heuristicTrace(inliner->tracer(),"  ===>[AA] Class: %s, Count: %zu\n", entry.first.c_str(), entry.second);
+      }
+   }
+
+}
+
 
 
 void TR_ProfileableCallSite::findSingleProfiledMethod(ListIterator<TR_ExtraAddressInfo>& sortedValuesIt, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner)
@@ -1567,10 +1674,11 @@ bool TR_ProfileableCallSite::findProfiledCallTargets (TR_CallStack *callStack, T
          return false;
          }
       }
-
+   heuristicTrace(inliner->tracer(), "  ===> [AA] Calling findSingleProfiledReceiver \n");
    findSingleProfiledReceiver(sortedValuesIt, valueInfo, inliner);
    if (!numTargets())
       {
+      heuristicTrace(inliner->tracer(), "  ===> [AA] Calling findSingleProfiledMethod \n");
       findSingleProfiledMethod(sortedValuesIt, valueInfo, inliner);
       }
 

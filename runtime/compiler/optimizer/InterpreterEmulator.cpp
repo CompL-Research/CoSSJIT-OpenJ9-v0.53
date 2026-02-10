@@ -1283,8 +1283,8 @@ InterpreterEmulator::refineResolvedCalleeForInvokestatic(
 bool
 InterpreterEmulator::findAndCreateCallsitesFromBytecodes(bool wasPeekingSuccessfull, bool withState)
    {
-   heuristicTrace(tracer(),"Find and create callsite %s\n", withState ? "with state" : "without state");
-
+   heuristicTrace(tracer(),"(findAndCreateCallsitesFromBytecodes) Find and create callsite %s\n", withState ? "with state" : "without state");
+   
    if (withState)
       initializeIteratorWithState();
    _wasPeekingSuccessfull = wasPeekingSuccessfull;

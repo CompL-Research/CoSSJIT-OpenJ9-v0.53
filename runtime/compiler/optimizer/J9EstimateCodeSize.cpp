@@ -1281,6 +1281,7 @@ TR_J9EstimateCodeSize::realEstimateCodeSize(TR_CallTarget *calltarget, TR_CallSt
    {
    TR_ASSERT(calltarget->_calleeMethod, "assertion failure");
 
+   heuristicTrace(tracer(), "  ===> [AA] Inside realEstimateCodeSize \n");
    heuristicTrace(tracer(), "*** Depth %d: ECS CSI -- calltarget = %p , _ecsPrexArgInfo = %p",
       _recursionDepth, calltarget, calltarget->_ecsPrexArgInfo);
 

@@ -36,6 +36,8 @@ class TR_ProfileableCallSite : public  TR_IndirectCallSite
       //capabilities
       void findSingleProfiledReceiver(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
       virtual void findSingleProfiledMethod(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
+      // [AA]
+      void checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
       virtual TR_YesNoMaybe isCallingObjectMethod() { return TR_maybe; };
    };
 

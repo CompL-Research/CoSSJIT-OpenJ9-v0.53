@@ -3899,7 +3899,8 @@ bool TR_MultipleCallTargetInliner::inlineCallTargets(TR::ResolvedMethodSymbol *c
                if (prevCallStack==0)
                   {
                   heuristicTrace(tracer(),"\n");
-                  heuristicTrace(tracer(),"^^^ Top Level: Analysing Call at call node %p . Creating callsite %p to encapsulate call.",node,callsite);
+                  heuristicTrace(tracer(), "===> [AA] (inlineCallTargets) Starting a new CallSite in Method %s BCI: %d\n", comp()->signature(), callsite->_bcInfo.getByteCodeIndex());
+                  heuristicTrace(tracer()," ^^^ Top Level: Analysing Call at call node %p . Creating callsite %p to encapsulate call.",node,callsite);
                   }
 
                getSymbolAndFindInlineTargets(&callStack, callsite);
@@ -3946,6 +3947,7 @@ bool TR_MultipleCallTargetInliner::inlineCallTargets(TR::ResolvedMethodSymbol *c
                      {
                      if (prevCallStack == 0)//we only weigh base level calls.. All other calls we proceed right to inlining
                         {
+                        heuristicTrace(tracer(), "  ===> [AA] Calling weighCallSite \n");
                         weighCallSite(&callStack, callsite, currentBlockHasExceptionSuccessors);
 
                         if (tracer()->debugLevel())
@@ -4196,6 +4198,7 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
    {
    TR_J9InlinerPolicy *j9inlinerPolicy = (TR_J9InlinerPolicy *) getPolicy();
    TR_InlinerDelimiter delimiter(tracer(), "weighCallSite");
+   heuristicTrace(tracer()," [AA] ===> Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets());
 
    printf(" == Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets()); fflush(stdout);
    for (int32_t k = 0; k < callsite->numTargets(); k++)
@@ -4216,6 +4219,7 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
       const char* extName = jit_callee_name->signature(comp()->trMemory(), heapAlloc);
       std::string calleeName(extName);
       printf(" The JIT Callee Name: %s\n", calleeName.c_str());
+      heuristicTrace(tracer()," [AA] ===> The JIT Callee Name: %s\n", calleeName.c_str());
       
       //for partial inlining:
       calltarget->_originatingBlock = callsite->_callNodeTreeTop->getEnclosingBlock();
