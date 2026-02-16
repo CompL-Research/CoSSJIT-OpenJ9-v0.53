@@ -1256,8 +1256,23 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
    
    // [AA]
    // TR_OpaqueClassBlock* receivedType = checkIfStaticAnalysisCanSuggest(sortedValuesIt, valueInfo, inliner);    
-   checkIfStaticAnalysisCanSuggest(sortedValuesIt, valueInfo, inliner); 
+   auto staticCandidate = checkIfStaticAnalysisCanSuggest(sortedValuesIt, valueInfo, inliner); 
 
+   if(staticCandidate.bestClass != nullptr) {
+      heuristicTrace(inliner->tracer()," ==> Got best callee based on static analysis suggestion %s\n",_initialCalleeSymbol);
+         comp()->enterHeuristicRegion();
+         TR_ResolvedMethod* targetMethod = getResolvedMethod (staticCandidate.bestClass);
+         comp()->exitHeuristicRegion();
+
+         if (targetMethod) {
+            TR_VirtualGuardSelection *guard = NULL;
+            guard = new (comp()->trHeapMemory()) TR_VirtualGuardSelection(TR_ProfiledGuard, TR_VftTest, staticCandidate.bestClass);
+            heuristicTrace(inliner->tracer()," ==> Creating a profiled call. callee Symbol %p frequencyadjustment %f",_initialCalleeSymbol, staticCandidate.frequency);
+            addTarget(comp()->trMemory(),inliner,guard,targetMethod,staticCandidate.bestClass,heapAlloc,staticCandidate.frequency);
+         } else {
+            heuristicTrace(inliner->tracer()," ==> No Target Method Found");
+         }
+   } else {
    for (TR_ExtraAddressInfo *profiledInfo = sortedValuesIt.getFirst(); profiledInfo != NULL; profiledInfo = sortedValuesIt.getNext())
       {
       int32_t freq = profiledInfo->_frequency;
@@ -1289,7 +1304,35 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
 
       if (comp()->trace(OMR::inlining))
          traceMsg(comp(), "  ===>[AA] Inside (findSingleProfiledReceiver) Profile Value: %d\n", freq);
- 
+
+      heuristicTrace(inliner->tracer(), " ==> tempreceiverClass = %p, best_class = %p\n", tempreceiverClass, staticCandidate.bestClass);
+
+      // if(best_class == tempreceiverClass) {
+      //    comp()->enterHeuristicRegion();
+      //    TR_ResolvedMethod* targetMethod = getResolvedMethod (tempreceiverClass);
+      //    comp()->exitHeuristicRegion();
+
+      //    if (!targetMethod) {
+      //       continue;
+      //    }
+      //    TR_VirtualGuardSelection *guard = NULL;
+      //    if (preferMethodTest)
+      //       guard = new (comp()->trHeapMemory()) TR_VirtualGuardSelection(TR_ProfiledGuard, TR_MethodTest, tempreceiverClass);
+      //    else
+      //       guard = new (comp()->trHeapMemory()) TR_VirtualGuardSelection(TR_ProfiledGuard, TR_VftTest, tempreceiverClass);
+
+      //    // if the previous value was from the interpreter profiler
+      //    // don't apply the optimization
+      //    TR_ByteCodeInfo &bcInfo = _bcInfo;  //callNode->getByteCodeInfo();
+      //    if (valueInfo->getTopProbability() == 1.0f && valueInfo->getProfiler()->getSource() < LastProfiler)
+      //       guard->setIsHighProbablityProfiledGuard();
+
+      //    heuristicTrace(inliner->tracer()," ==> Creating a profiled call. callee Symbol %p frequencyadjustment %f",_initialCalleeSymbol, val);
+      //    addTarget(comp()->trMemory(),inliner,guard,targetMethod,tempreceiverClass,heapAlloc,val);
+      //    continue;
+      // }
+
+
       static const char* userMinProfiledCallFreq = feGetEnv("TR_MinProfiledCallFrequency");
       static const float minProfiledCallFrequency = userMinProfiledCallFreq ? atof (userMinProfiledCallFreq) :
          comp()->getOption(TR_DisableMultiTargetInlining) ? MIN_PROFILED_CALL_FREQUENCY : .10f;
@@ -1403,10 +1446,10 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
          }
 
       }
-
+   }
    }
 
-void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>& sortedValuesIt, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner)
+TR_ProfileableCallSite::BestInlineCandidate TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>& sortedValuesIt, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner)
 {
    
    heuristicTrace(inliner->tracer(),"  1. Inside check checkIfStaticAnalysisCanSuggest for Method %s\n", comp()->signature());
@@ -1416,6 +1459,16 @@ void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_Ext
 
    // Map to store the final Status
    std::unordered_map<std::string, size_t> classCountMap;
+
+   // Map to store profile values
+   std::unordered_map<std::string, float> profile;
+
+   // Map to store the final Status
+   // std::unordered_map<std::string, float> finalBenefit;
+   std::unordered_map<TR_OpaqueClassBlock*, float> finalBenefit;
+
+   std::unordered_map<std::string, TR_OpaqueClassBlock*> classPtrMap;
+   BestInlineCandidate result;
 
    // Reading the analysis result 
    if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
@@ -1475,7 +1528,8 @@ void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_Ext
                }
 
                std::string prefix = classNameStr + ".";
-               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  5. Method Sig is: %s and Callee is: %s and %s\n", methodSig, prefix, classNameStr); }
+               classPtrMap[classNameStr] = tempreceiverClass;
+               if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  5. Method Sig is: %s and Callee is: %s and %s\n", methodSig.c_str(), prefix.c_str(), classNameStr.c_str()); }
                // Compare 
                if (methodSig.compare(pos, prefix.size(), prefix) == 0) {
                      found = true;
@@ -1485,6 +1539,7 @@ void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_Ext
             if (found) {
                if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  ===>[AA]  FOUND !!!!! Static Analysis inlining result for %s at BCI: %d, nof of Probable SA: %d \n",className, jit_bc, count); }
                classCountMap[classNameStr] = count;
+               profile[classNameStr] = val;
             } else {
                if (comp()->trace(OMR::inlining)) { heuristicTrace(inliner->tracer(),"  ===>[AA]  Static Analysis results: callee not found!!! "); }
             }
@@ -1504,7 +1559,45 @@ void TR_ProfileableCallSite::checkIfStaticAnalysisCanSuggest(ListIterator<TR_Ext
          heuristicTrace(inliner->tracer(),"  ===>[AA] Class: %s, Count: %zu\n", entry.first.c_str(), entry.second);
       }
    }
+   size_t maxValue = 0;
+   for (const auto &entry : classCountMap) {
+      maxValue = std::max(maxValue, entry.second);
+      heuristicTrace(inliner->tracer(),"  ===>[AA] Max Stack Allocation Value: %d \n", maxValue);
+   }
 
+   for (const auto &entry : classCountMap) {
+      float benefit;
+      heuristicTrace(inliner->tracer(),"  ===>[AA] Class: %s, Count: %zu\n", entry.first.c_str(), entry.second);
+      benefit = 0.6 * profile[entry.first.c_str()] + 0.4 * (classCountMap[entry.first.c_str()] / maxValue);
+      heuristicTrace(inliner->tracer(),"  ===>[AA] Benefit Value %f \n", benefit);
+      TR_OpaqueClassBlock* clazz = classPtrMap[entry.first.c_str()];
+      finalBenefit[clazz] = benefit;
+   }
+
+   TR_OpaqueClassBlock* bestClass = nullptr;
+   // std::string bestClass = "";
+   float maxBenefit = 0.0f;
+
+   for (const auto &entry : finalBenefit) {
+      if (entry.second > maxBenefit) {
+         maxBenefit = entry.second;
+         bestClass = entry.first;
+      }
+   }
+   if (bestClass) {
+      int32_t len = 1;
+      const char *bestName = TR::Compiler->cls.classNameChars(comp(), bestClass, len);
+      std::string bestNameStr(bestName, len);
+      result.bestClass = bestClass;
+      result.frequency = profile[bestNameStr];
+      result.benefit = maxBenefit;
+      heuristicTrace(inliner->tracer(), "  ===>[AA] The best class is : %s (benefit=%f)\n", bestName, maxBenefit);
+   }
+
+
+   
+   heuristicTrace(inliner->tracer(),"  ===>[AA] The best class is : %p with freq: %d and benefit: %f \n", result.bestClass, result.frequency, result.benefit);
+   return result;
 }
 
 

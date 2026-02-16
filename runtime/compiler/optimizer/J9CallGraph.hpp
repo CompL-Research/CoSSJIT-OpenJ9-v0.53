@@ -37,7 +37,15 @@ class TR_ProfileableCallSite : public  TR_IndirectCallSite
       void findSingleProfiledReceiver(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
       virtual void findSingleProfiledMethod(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
       // [AA]
-      void checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
+      // Result structure for static-analysis based suggestion
+      struct BestInlineCandidate
+      {
+         TR_OpaqueClassBlock* bestClass = nullptr;
+         int32_t frequency = 0;
+         float benefit = 0.0f;
+      };
+      BestInlineCandidate checkIfStaticAnalysisCanSuggest(ListIterator<TR_ExtraAddressInfo>&, TR_AddressInfo * valueInfo, TR_InlinerBase* inliner);
+
       virtual TR_YesNoMaybe isCallingObjectMethod() { return TR_maybe; };
    };
 
