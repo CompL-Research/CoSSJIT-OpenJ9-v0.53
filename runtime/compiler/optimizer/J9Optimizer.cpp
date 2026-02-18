@@ -258,6 +258,7 @@ static const OptimizationStrategy noOptStrategyOpts[] =
 
 static const OptimizationStrategy coldStrategyOpts[] =
    {
+   {OMR::expensiveObjectAllocationGroup,             OMR::Always}, // Added for Escape Analysis to be triggered at Cold Level.
    { OMR::trivialDeadTreeRemoval,                    OMR::IfEnabled                  },
    { OMR::coldBlockOutlining                                                    },
    { OMR::stringBuilderTransformer,                  OMR::IfNotQuickStart            },
@@ -300,6 +301,7 @@ static const OptimizationStrategy coldStrategyOpts[] =
    { OMR::catchBlockProfiler,                        OMR::IfExceptionHandlers   },
    { OMR::regDepCopyRemoval                                                     },
    { OMR::hotFieldMarking                                                       },
+   // { OMR::cheapGlobalValuePropagationGroup                                      }, // [AA] Added to make sure Escape Analysis works in cold optimization level.
    { OMR::endOpts                                                               }
    };
 

@@ -1381,8 +1381,106 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       }
 
 
+   /* 
+    * This point tries to find out if the invoked method is cold or above.
+    * Based on the hotness level, we should decide how to create candidates.
+    * So: 
+    *    -- hotness = cold. Just use the static analysis result for creating the candidates)
+    *    -- hotness = warm or above. Call the findCandidates method to create the candidate list.
+    */
+   TR_Hotness methodHotness = comp()->getMethodHotness();
+   if (methodHotness <=  cold) {
+      TR::NodeChecklist visited (comp());
+      int32_t     i;
+      bool foundUserAnnotation=false;
+      const char *className = NULL;
+      bool presentInStaticAnalysis = false;
+      std::vector <int32_t> *nonEscapingObjects = NULL;
+      
+      if(trace()) 
+         traceMsg(comp(), "Method hotness is cold, creating candidate list based on static analysis results\n");
+      
+      // Get the static analysis unconditional result. 
+      if (TR::Options::_staticAnalysisNonEscapingMap.size() && TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end())
+         nonEscapingObjects = &(TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].first);
+      
+      // Iterate over the node and create candidate for the bci available from the static analysis 
+      for (_curTree = comp()->getStartTree(); _curTree; _curTree = _curTree->getNextTreeTop()) {
+         TR::Node    *node = _curTree->getNode();
+         if(trace()) traceMsg(comp(), "Processing the node in the Method: %s at the BCI: %d \n", comp()->signature(), node->getByteCodeIndex());
+         if (visited.contains(node))
+            continue;
+         visited.add(node);
 
-   findCandidates(possibleAllocations, withinRes, accumulatedBCIs);
+         if (node->getOpCodeValue() == TR::BBStart) {
+            _curBlock = node->getBlock();
+            continue;
+         }
+
+         if (!node->getNumChildren())
+            continue;
+
+         node = node->getFirstChild();
+
+         if (visited.contains(node))
+            continue;
+         visited.add(node);
+
+         if (node->getOpCode().isNew() && node->isHeapificationAlloc()) {
+            if (trace())
+               traceMsg(comp(), "Reject candidate %s n%dn [%p] because it is for heapification\n", node->getOpCode().getName(), node->getGlobalIndex(), node);
+               continue;
+         }
+         if (node->getOpCodeValue() != TR::New &&
+            node->getOpCodeValue() != TR::newvalue &&
+            node->getOpCodeValue() != TR::newarray &&
+            node->getOpCodeValue() != TR::anewarray) {
+            continue;
+         }
+	      foundUserAnnotation=false;
+         presentInStaticAnalysis = false;
+         TR_OpaqueClassBlock *classInfo = 0;
+         if (nonEscapingObjects && nonEscapingObjects->size() && std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), node->getByteCodeIndex())!=nonEscapingObjects->end())
+         {
+            withinRes++;
+            presentInStaticAnalysis = true;
+            if(trace()) traceMsg(comp(), "Found the static analysis result at the BCI: %d \n", node->getByteCodeIndex());
+
+         }
+         if(!presentInStaticAnalysis) {
+            continue;
+         }
+         Candidate *candidate = createCandidateIfValid(node, classInfo,foundUserAnnotation);
+         if (!candidate)
+            continue;
+         possibleAllocations++;
+         if(trace()) traceMsg(comp(), "Candidate create just using static analysis at the BCI: %d \n", node->getByteCodeIndex());
+
+         candidate->setLocalAllocation(_createStackAllocations && (candidate->_size > 0));
+         if (candidate->isLocalAllocation()) {
+            if (node->getSymbolReference() == _newObjectNoZeroInitSymRef ||
+               node->getSymbolReference() == _newValueSymRef ||
+               node->getSymbolReference() == _newArrayNoZeroInitSymRef ||
+               node->getSymbolReference() == _aNewArrayNoZeroInitSymRef)
+            {
+               candidate->setExplicitlyInitialized();
+            }
+
+            if (blockIsInLoop(_curBlock))
+               candidate->setInsideALoop();
+         }
+         _candidates.add(candidate);
+      }
+
+      if (trace()) {
+         comp()->dumpMethodTrees("Trees after finding candidates");
+      }
+
+   } else {
+      findCandidates(possibleAllocations, withinRes, accumulatedBCIs);
+   }
+
+   
    cost++;
    // [AA] Check if can be marked for scalar replacement
    if (!_candidates.isEmpty()) {
