@@ -2107,20 +2107,20 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
       }
 
    // AA: Printing all the stack allocated objects 
-   FILE *outfile = fopen("finalStackAllocation.txt", "a");
-   if (outfile) {
-    Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
+   // FILE *outfile = fopen("finalStackAllocation.txt", "a");
+   // if (outfile) {
+   //  Candidate *firstCandidate = _candidates.getFirst();  // Check if there are any candidates
 
-    if (firstCandidate) {  // Only proceed if there is at least one candidate
-        fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+   //  if (firstCandidate) {  // Only proceed if there is at least one candidate
+   //      fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
         
-        for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
-            fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
-        }
+   //      for (Candidate *candidate = firstCandidate; candidate; candidate = candidate->getNext()) {
+   //          fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+   //      }
 
-        fprintf(outfile, "]\n");  // Close array bracket
-    }
-   }
+   //      fprintf(outfile, "]\n");  // Close array bracket
+   //  }
+   // }
 
    // AA: Printing all the stack allocated objects 
    // FILE *outfile = fopen("categoryStackAllocation.txt", "a");
@@ -2267,7 +2267,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                   avoidStringCopyAllocation(candidate);
                else
                   makeContiguousLocalAllocation(candidate);
-                  if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
+                  if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d with caller index %d (Is Allocated Statically OPT[%d], OPT_INL[%d])\n",candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex(), candidate->_optimisticallyNonEscaping,candidate->_optimisticallyNonEscapinginlining) ;
                   printf("stack allocation in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
 
                }
@@ -4583,6 +4583,9 @@ void TR_EscapeAnalysis::forceEscape(TR::Node *node, TR::Node *reason, bool force
 
 bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
 {
+   if(trace())
+      traceMsg(comp(), "1. Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
+
    printf("Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
    if (candidate->_optimisticallyNonEscaping) 
       return true;
@@ -4593,7 +4596,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
 
    // std::string currentMethodSignature = std::string(comp()->signature());
    // std::string signature = currentMethodSignature;
-   int32_t callInstructionByteCodeForInlinedMethod = -1; // must be greater than 0 to be a valid byteco
+   int32_t callInstructionByteCodeForInlinedMethod = -1; // must be greater than 0 to be a valid bytecode
 
    // If the candidate has a valid caller index
    if (!candidate->_node->getByteCodeInfo().isInvalidCallerIndex()) { 
@@ -4616,38 +4619,100 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
           * Check 2: Check if can be stack allocated if at the call site the method got inlined and statically 
           * we have conditionally marked the BCI for stack allocation.
           */
-         
+         if(trace())
+            traceMsg(comp(), "2. No Results found for direct allocation in static analysis for this Candidate: %d\n", candidate->_node->getByteCodeIndex());
          TR_InlinedCallSite & ics = comp()->getInlinedCallSite(candidate->_node->getByteCodeInfo().getCallerIndex());
+      
+         // CallSite for which there might be results available in static analysis
          callInstructionByteCodeForInlinedMethod = ics._byteCodeInfo.getByteCodeIndex();
+         if(trace())
+            traceMsg(comp(), "3. [Inline Checking] For Candidate [%p] with BCI %d the ICS value is %d and ics.bytecode is: %d \n", candidate->_node, candidate->_node->getByteCodeIndex(), ics._byteCodeInfo.getCallerIndex(), callInstructionByteCodeForInlinedMethod);
+         
          // Get the signature of the method that can be inlined at the callsite
          std::string signature = comp()->compileRelocatableCode() ?
-         std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+            std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
             std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
          printf("Signature we got: %s \n", signature.c_str());
+         if(trace())
+            traceMsg(comp(), "4. [Inline Checking] Signature we got: %s \n", signature.c_str());
          
          // if (TR::Options::_staticAnalysisNonEscapingMap.find(signature) == TR::Options::_staticAnalysisNonEscapingMap.end())
          //    return false;
+         
+         // This gets all the BCIs marked for direct stack allocation for the inlined method in the static analysis. 
+         //    (bar inlined in foo, so get bar results, i.e void bar()[. . . ] )
          std::vector <int32_t> * nonEscapingObjects =  &(TR::Options::_staticAnalysisNonEscapingMap[signature].first);
+         
+         // Check if the current candidate present in inlined callee's static analysis result.
+         // "is_non_escaping" becomes true if the candidate’s bytecode index is present in the nonEscapingObjects list
          bool is_non_escaping = !(nonEscapingObjects->size()==0 || !std::binary_search(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex()));
+         
+         // If not check the conditionally stack allocatable list for the inlined method in the static analysis result of the caller.
          if (!is_non_escaping && callInstructionByteCodeForInlinedMethod >= 0) {
-            //auto x = &(TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second.second[callInstructionByteCodeForInlinedMethod]);
-            // auto& inliningResultMap = TR::Options::_staticAnalysisNonEscapingMap[currentMethodSignature].second.second;
-            // auto x = &(inliningResultMap[callInstructionByteCodeForInlinedMethod]);
-            auto x = &(_inlining_result[callInstructionByteCodeForInlinedMethod]);
-            // printf("The x value is %s: ", x );
-            if (x->find(signature) != x->end()) {
-               std::vector <int32_t> * nonEscapingObjects = &((*x)[signature]);
-               // printf("The list of BCI Marked for stack allocation from method %s to method %s: ", signature.c_str(), comp()->signature());
-               // for (const auto& obj : *nonEscapingObjects) {
-               //       printf("%d ", nonEscapingObjects[i]);
-               // }
+            // Get the caller's conditional static analysis for the callee
+            auto callers_inline_res = &(_inlining_result[callInstructionByteCodeForInlinedMethod]);
+            if(trace())
+               traceMsg(comp(), "5. [Inline Checking] Result we got %p \n", callers_inline_res);
+            // printf("The x value is %p: ", callers_inline_res );
+            if (callers_inline_res->find(signature) != callers_inline_res->end()) {
+               std::vector <int32_t> * nonEscapingObjects = &((*callers_inline_res)[signature]);
+               if (trace()) {
+                  traceMsg(comp(), "[Inline Checking] BCIs marked for stack allocation from %s to %s:\n",
+                     signature.c_str(),
+                     comp()->signature());
+                  for (const auto& obj : *nonEscapingObjects) {
+                     traceMsg(comp(), "[Inline Checking] [BCI]: %d\n", obj);
+                  }
+               }
                bool y = !(nonEscapingObjects->size()==0 || find(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==nonEscapingObjects->end());
                if (y) {
                   is_non_escaping = true; // Written this way to allow breakpointing here to find if implementation working as expected
+                  if(trace()) {
+                     traceMsg(comp(), "=== Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+                  }
                   printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                   candidate->_optimisticallyNonEscapinginlining = true;
-               } 
-            } 
+               }
+            }
+            if(!is_non_escaping && ics._byteCodeInfo.getCallerIndex() > -1) {
+               TR_InlinedCallSite & immediatecalleeics = comp()->getInlinedCallSite(ics._byteCodeInfo.getCallerIndex());
+               int32_t immedidatecallInstructionByteCodeForInlinedMethod = immediatecalleeics._byteCodeInfo.getByteCodeIndex();
+               std::string onelevelsignature = comp()->compileRelocatableCode() ?
+                     std::string(((TR_AOTMethodInfo *)immediatecalleeics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
+                     std::string(fe()->sampleSignature(immediatecalleeics._methodInfo, 0, 0, comp()->trMemory()));
+               if(trace())
+                  traceMsg(comp(), "6. [Inline Checking] One level UP For Candidate [%p] with BCI %d the caller is: %s with caller BCI:%d\n", candidate->_node, candidate->_node->getByteCodeIndex(), onelevelsignature.c_str(), immedidatecallInstructionByteCodeForInlinedMethod);               
+                  if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(onelevelsignature.c_str())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
+                     std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> _onelevel_inlining_result;
+                     _onelevel_inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(onelevelsignature.c_str())].second.second.first.first;
+                     auto onelevel_callers_inline_res = &(_onelevel_inlining_result[callInstructionByteCodeForInlinedMethod]);
+                     if(trace())
+                        traceMsg(comp(), "7. [Inline Checking] Result we got %p \n", onelevel_callers_inline_res);
+
+
+                        if (onelevel_callers_inline_res->find(signature) != onelevel_callers_inline_res->end()) {
+                           std::vector <int32_t> * nonEscapingObjects = &((*onelevel_callers_inline_res)[signature]);
+                           if (trace()) {
+                              traceMsg(comp(), "8. [Inline Checking] BCIs marked for stack allocation from %s to %s:\n",
+                                 signature.c_str(),
+                                 comp()->signature());
+                              for (const auto& obj : *nonEscapingObjects) {
+                                 traceMsg(comp(), "[Inline Checking] [BCI]: %d\n", obj);
+                              }
+                           }
+                           bool y = !(nonEscapingObjects->size()==0 || find(nonEscapingObjects->begin(), nonEscapingObjects->end(), candidate->_node->getByteCodeIndex())==nonEscapingObjects->end());
+                           if (y) {
+                              is_non_escaping = true; // Written this way to allow breakpointing here to find if implementation working as expected
+                              if(trace()) {
+                                 traceMsg(comp(), "=== 9. MultiLevel Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+                              }
+                              printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+                              candidate->_optimisticallyNonEscapinginlining = true;
+                           }
+                        }   
+                  }
+            }  
+             
          }
 
          if (!is_non_escaping) {
@@ -4658,8 +4723,8 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
       return false;
    }
    if (trace())
-      traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis\n", candidate->_node, candidate->_node->getByteCodeIndex());
-   printf("==== 1. Optimistically stack allocating node [%p] (BCI %d) based on static analysis ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+      traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
+   printf("==== 1. Optimistically stack allocating node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
    candidate->setMustBeContiguousAllocation();
    candidate->_optimisticallyNonEscaping = true;
    return true;
@@ -8702,12 +8767,12 @@ void TR_EscapeAnalysis::makeNonContiguousLocalAllocation(Candidate *candidate)
    // AA: Added a debug counter for counting scalar replacement.
    TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/ScalarReplaced"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
    // AA: Printing all the scalar-replaced objects 
-   FILE *outfile = fopen("finalScalarReplacementj9-v-53.txt", "a");
-   if (outfile) {
-      fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
-      fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
-      fprintf(outfile, "]\n");  // Close array bracket
-   }
+   // FILE *outfile = fopen("finalScalarReplacementj9-v-53.txt", "a");
+   // if (outfile) {
+   //    fprintf(outfile, "%s [%s] [", comp()->signature(), comp()->getHotnessName());
+   //    fprintf(outfile, "%d ", candidate->_node->getByteCodeIndex());
+   //    fprintf(outfile, "]\n");  // Close array bracket
+   // }
 
    if (candidate->_node->getOpCodeValue() == TR::newvalue)
       {
@@ -9897,6 +9962,7 @@ void TR_EscapeAnalysis::printCandidates(const char *title)
       {
       traceMsg(comp(), "Candidate %d:\n", index++);
       traceMsg(comp(), "Bytecode index = %d\n", candidate->_node->getByteCodeIndex());
+      traceMsg(comp(), "Caller index = %d\n", candidate->_node->getByteCodeInfo().getCallerIndex());
       candidate->print();
       }
    }
