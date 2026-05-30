@@ -1444,6 +1444,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          {
             withinRes++;
             presentInStaticAnalysis = true;
+            TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ColdAllocation/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
             if(trace()) traceMsg(comp(), "Found the static analysis result at the BCI: %d \n", node->getByteCodeIndex());
 
          }
@@ -1556,11 +1557,12 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
          }
         
          // [AA]
-         if (!checkIfMarkedForScalarReplacement(candidate)) {
+         // if (!checkIfMarkedForScalarReplacement(candidate)) {
+         // if (!checkIfNonEscapingInStaticAnalysis(candidate)){
             bool ignoreRecursion = false;
             checkEscape(comp()->getStartTree(), false, ignoreRecursion);
             cost++;
-         }
+         // }
       }
 
    //fixup those who have virtual calls
@@ -2268,7 +2270,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                else
                   makeContiguousLocalAllocation(candidate);
                   if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d with caller index %d (Is Allocated Statically OPT[%d], OPT_INL[%d])\n",candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex(), candidate->_optimisticallyNonEscaping,candidate->_optimisticallyNonEscapinginlining) ;
-                  printf("stack allocation in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
+                  printf(" --> Stack allocating %d in %s \n",candidate->_node->getByteCodeIndex(), comp()->signature());fflush(stdout);
 
                }
             else
@@ -2987,8 +2989,9 @@ Candidate *TR_EscapeAnalysis::createCandidateIfValid(TR::Node *node, TR_OpaqueCl
 
    Candidate *result = NULL;
    result = new (trStackMemory()) Candidate(node, _curTree, _curBlock, size, classInfo, comp());
-
-   result->setProfileOnly(profileOnly);
+   // if (!checkIfNonEscapingInStaticAnalysis(result) ) {
+      result->setProfileOnly(profileOnly);
+   // }
    return result;
    }
 
@@ -4586,7 +4589,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
    if(trace())
       traceMsg(comp(), "1. Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
 
-   printf("Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
+   // printf("Called checkIfNonEscapingInStaticAnalysis Method for Candidate: %d\n",candidate->_node->getByteCodeIndex());
    if (candidate->_optimisticallyNonEscaping) 
       return true;
 
@@ -4670,6 +4673,8 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
                   if(trace()) {
                      traceMsg(comp(), "=== Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                   }
+                  TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ConditionalInlining/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+
                   printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                   candidate->_optimisticallyNonEscapinginlining = true;
                }
@@ -4706,6 +4711,8 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
                               if(trace()) {
                                  traceMsg(comp(), "=== 9. MultiLevel Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                               }
+                                 TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ConditionalInlining/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+
                               printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                               candidate->_optimisticallyNonEscapinginlining = true;
                            }
@@ -4723,8 +4730,8 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
       return false;
    }
    if (trace())
-      traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
-   printf("==== 1. Optimistically stack allocating node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
+      traceMsg(comp(), "Optimistically marking for stack allocation node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
+   printf("==== 1. Optimistically marking for stack allocation node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
    candidate->setMustBeContiguousAllocation();
    candidate->_optimisticallyNonEscaping = true;
    return true;
@@ -4831,7 +4838,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInConditinalStaticAnalysis(Candidate *
       if (std::find(accumulatedBCIs.begin(), accumulatedBCIs.end(), candidate->_node->getByteCodeIndex()) != accumulatedBCIs.end())
       {
          if (trace())
-          traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
+          traceMsg(comp(), "Optimistically marking for stack allocation [%p] (BCI %d) based on static analysis conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
          // printf("==== 2. Optimistically stack allocating node [%p] (BCI %d) based on static analysis conditional argument ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
          candidate->setMustBeContiguousAllocation();
          candidate->_optimisticallyNonEscapingconditional = true;
@@ -4859,7 +4866,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInConditinalBranchStaticAnalysis(Candi
       if (std::find(branchaccumulatedBCIs.begin(), branchaccumulatedBCIs.end(), candidate->_node->getByteCodeIndex()) != branchaccumulatedBCIs.end())
       {
          if (trace())
-          traceMsg(comp(), "Optimistically stack allocating node [%p] (BCI %d) based on static analysis branch conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
+          traceMsg(comp(), "Optimistically marking for stack allocation [%p] (BCI %d) based on static analysis branch conditional argument\n", candidate->_node, candidate->_node->getByteCodeIndex());
          // printf("==== 3. Optimistically stack allocating node [%p] (BCI %d) based on static analysis branch conditional argument ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
          candidate->setMustBeContiguousAllocation();
          candidate->_optimisticallyNonEscapingconditionalbranch = true;
@@ -4881,8 +4888,8 @@ bool TR_EscapeAnalysis::checkIfMarkedForScalarReplacement(Candidate *candidate) 
 
          if (isNonContiguous) {
             if (trace())
-               traceMsg(comp(), "5. Optimistically replacing the node [%p] (BCI %d) to scalars based on static analysis results \n", candidate->_node, candidate->_node->getByteCodeIndex());
-            printf("==== 5. Optimistically replacing the node [%p] (BCI %d) to scalars based on static analysis results ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+               traceMsg(comp(), "5. Optimistically marking for stack allocation [%p] (BCI %d) to scalars based on static analysis results \n", candidate->_node, candidate->_node->getByteCodeIndex());
+            printf("==== 5. Optimistically marking for stack allocation [%p] (BCI %d) to scalars based on static analysis results ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
             candidate->setMustBeNonContiguousAllocation();
             candidate->_optimisticallyScalarReplaced = true;
             return true;   
@@ -5480,7 +5487,7 @@ void TR_EscapeAnalysis::checkEscape(TR::TreeTop *firstTree, bool isCold, bool & 
       {
       node = treeTop->getNode();
       // [AA]
-      // Indriect Store: (astorei, istorei, fstorei) Store into memory via a reference or address (a.f = 10; or arr[i] = v;)
+      // Indirect Store: (astorei, istorei, fstorei) Store into memory via a reference or address (a.f = 10; or arr[i] = v;)
       // First Check: Objective: If candidate B is being initialized from candidate A (string copy), merge their alias/value-number 
       // sets so EA knows they are the same object.
       if (node->getOpCode().isStoreIndirect() && detectStringCopy(node))
@@ -5501,6 +5508,9 @@ void TR_EscapeAnalysis::checkEscape(TR::TreeTop *firstTree, bool isCold, bool & 
             {
             if (usesValueNumber(candidate, copyNodeVN))
                {
+
+               // // NEW CHECK
+
                for (int32_t i = baseCandidate->_valueNumbers->size()-1; i >= 0; i--)
                   {
                   int32_t valueNumber = baseCandidate->_valueNumbers->element(i);
@@ -6322,6 +6332,16 @@ void TR_EscapeAnalysis::checkEscapeViaCall(TR::Node *node, TR::NodeChecklist& vi
 
       for (candidate = _candidates.getFirst(); candidate; candidate = candidate->getNext())
          {
+         // NEW CHECK
+         if (checkIfNonEscapingInStaticAnalysis(candidate))
+         {
+            if (trace())
+               traceMsg(comp(),
+                  "Skipping escape-via-call for [%p] at node [%p]\n",
+                  candidate->_node, node);
+            printf("Skipping escape-via-call for [%p] at node [%p]\n", candidate->_node, node);
+            continue;
+         }    
          if (usesValueNumber(candidate, nodeVN))
             {
             // Remember calls to fillInStackTrace and printStackTrace. These

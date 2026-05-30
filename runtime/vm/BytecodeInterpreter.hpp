@@ -441,6 +441,16 @@ retry:
 		UDATA *bp = buildSpecialStackFrame(REGISTER_ARGS, J9SF_FRAME_TYPE_METHOD, flags, false);
 		*--_sp = (UDATA)method;
 		_arg0EA = bp + J9_ROM_METHOD_FROM_RAM_METHOD(method)->argCount;
+		// [AA] Printing interpreting methods
+		J9UTF8 *className = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(method)->romClass);
+		J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(method));
+		// PORT_ACCESS_FROM_VMC(currentThread);
+		// j9tty_printf(PORTLIB,
+		// "Interpreting: %.*s.%.*s\n",
+		// J9UTF8_LENGTH(className), J9UTF8_DATA(className),
+		// J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName));
+
+		printf("Interpreting: %.*s.%.*s\n", J9UTF8_LENGTH(className), J9UTF8_DATA(className), J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName));
 		return bp;
 	}
 
@@ -2184,6 +2194,25 @@ done:
 		UDATA preCount = 0;
 		UDATA postCount = 0;
 		UDATA result = 0;
+		// // [AA]
+		// J9UTF8 *classNameUtf = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(_sendMethod)->romClass);
+		// J9UTF8 *methodNameUtf = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(_sendMethod));
+
+		// std::string className(
+		// (const char *)J9UTF8_DATA(classNameUtf),
+		// J9UTF8_LENGTH(classNameUtf));
+
+		// std::string methodName(
+		// (const char *)J9UTF8_DATA(methodNameUtf),
+		// J9UTF8_LENGTH(methodNameUtf));
+
+		// // bool static_result = false;
+		// bool static_result = methodMatchesStaticAnalysis(_sendMethod);
+		// // if (TR::Options::_staticAnalysisNonEscapingMap.find(methodName)
+		// // 	!= TR::Options::_staticAnalysisNonEscapingMap.end())
+		// // {
+		// // static_result = true;
+		// // }
 		do {
 			preCount = (UDATA)_sendMethod->extra;
 			postCount = preCount - _currentThread->jitCountDelta;

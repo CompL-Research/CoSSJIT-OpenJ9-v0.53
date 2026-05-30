@@ -9937,7 +9937,9 @@ TR::CompilationInfoPerThreadBase::compile(
             compiler->getOption(TR_UseSymbolValidationManager))
             compiler->getSymbolValidationManager()->populateWellKnownClasses();
 
+         printf("Compiling a method %s @ %s\n", compiler->signature(), compiler->getHotnessName());
          rtn = compiler->compile();
+         // printf("Compiled the method %s @ %s\n", compiler->signature(), compiler->getHotnessName());
 
          if (TR::Options::getVerboseOption(TR_VerboseCompilationDispatch) && !rtn)
             {

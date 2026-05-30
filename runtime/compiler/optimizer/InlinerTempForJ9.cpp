@@ -2904,45 +2904,33 @@ TR_J9InlinerPolicy::isInlineableJNI(TR_ResolvedMethod *method,TR::Node *callNode
 //    bool
 // TR_J9InlinerPolicy::isMarkedbyStaticAnalysis(TR_ResolvedMethod *method,TR::Node *callNode)
 //    {
-
-//       // [AA]
-//       std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> _inlining_result; 
+//       heuristicTrace(tracer(),"Checking results in isTargetSuggestedByStaticAnalysis for static analysis suggestions for weight increase \n");
+//       // Check if there are results for caller method in the static analysis result. 
 //       if (TR::Options::_staticAnalysisNonEscapingMap.find(std::string(comp()->signature())) != TR::Options::_staticAnalysisNonEscapingMap.end()) {
-//       _inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first.first;
-//       }
-
-//       bool found = false;
-      
-//       printf(" Inside isMarkedbyStaticAnalysis: The current Method is: %s ==== \n",comp()->signature());
-//       printf(" The JIT Callee Name: %s \n", method->signature(comp()->trMemory(), heapAlloc));
-//       const char* extName = method->signature(comp()->trMemory(), heapAlloc);
-//       std::string calleeName(extName);
-//       // 3. Iterate over the static result and see if there is callee result if yes then continue and do the inlining.
-//       if(callNode->getByteCodeIndex() != null) {
-//          int32_t jit_bc = callNode->getByteCodeIndex();
-//          auto bci_exists = _inlining_result.find(jit_bc);
-//          if (bci_exists != _inlining_result.end()) {
+//          // Static Analysis Map for Inlining
+//          std::unordered_map<int32_t, std::unordered_map<std::string, std::vector<int32_t>>> static_inlining_result;
+//          static_inlining_result = TR::Options::_staticAnalysisNonEscapingMap[std::string(comp()->signature())].second.second.first.first;
+//          const char * signature = method->signature(comp()->trMemory(), heapAlloc);
+//          std::string calleeName(signature);
+         
+//          auto bci_exists =  static_inlining_result.find(callNode->getByteCodeIndex());
+//          if (bci_exists != static_inlining_result.end()) {
 //             const auto &callee = bci_exists->second;
-
+//             heuristicTrace(tracer(),"The current BCI is:%d and callee method name is %p \n",callNode->getByteCodeIndex(),calleeName);
 //             auto innerIt = callee.find(calleeName);
 //             if (innerIt != callee.end()) {
-//                const std::vector<int32_t> &values = innerIt->second;
-//                printf(" FOUND !!!!! Static Analysis results says inline \n");
-//                // callStack->_maxCallSize = (uint32_t)callStack->_maxCallSize * 2;
-//                found= true;
+//                heuristicTrace(tracer(),"!!! SUCCESS !!! Static analysis suggested for this method: %p to get be inlined at :%d in the caller method %p \n",calleeName, callNode->getByteCodeIndex(),comp()->signature());
+//                // TR::DebugCounter::prependDebugCounter(comp(), "Dumb/Inlining/Static", callNodeTreeTop);
+
 //                return true;
 //             } else {
-//                // printf("Static Analysis results: callee not found!!! ");
+//                heuristicTrace(tracer(),"!!! FAILURE !!! No Callee found: No suggestion for method: %p at :%d in the caller method %p \n",calleeName, callNode->getByteCodeIndex(),comp()->signature());
 //                return false;
 //             }
 //          } else {
-//             // printf("NO Static Analysis results found ");
 //             return false;
 //          }
-//       } else {
-//          return false;
 //       }
-
 //       return false;
 //    }
 
@@ -4200,7 +4188,7 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
    TR_InlinerDelimiter delimiter(tracer(), "weighCallSite");
    heuristicTrace(tracer()," [AA] ===> Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets());
 
-   printf(" == Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets()); fflush(stdout);
+   // printf(" == Inside weightCallsite method === : Current Method: %s\t Number of Targets: %d", comp()->signature(), callsite->numTargets()); fflush(stdout);
    for (int32_t k = 0; k < callsite->numTargets(); k++)
       {
       int32_t size = 0;
@@ -4218,7 +4206,7 @@ void TR_MultipleCallTargetInliner::weighCallSite( TR_CallStack * callStack , TR_
       // Convert to string key
       const char* extName = jit_callee_name->signature(comp()->trMemory(), heapAlloc);
       std::string calleeName(extName);
-      printf(" The JIT Callee Name: %s\n", calleeName.c_str());
+      // printf(" The JIT Callee Name: %s\n", calleeName.c_str());
       heuristicTrace(tracer()," [AA] ===> The JIT Callee Name: %s\n", calleeName.c_str());
       
       //for partial inlining:
