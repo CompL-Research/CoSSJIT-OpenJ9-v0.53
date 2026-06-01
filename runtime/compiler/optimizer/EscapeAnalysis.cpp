@@ -1440,20 +1440,20 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
 	      foundUserAnnotation=false;
          presentInStaticAnalysis = false;
          TR_OpaqueClassBlock *classInfo = 0;
+         Candidate *candidate = createCandidateIfValid(node, classInfo,foundUserAnnotation);
+         if (!candidate)
+            continue;
          if (nonEscapingObjects && nonEscapingObjects->size() && std::find(nonEscapingObjects->begin(), nonEscapingObjects->end(), node->getByteCodeIndex())!=nonEscapingObjects->end())
          {
             withinRes++;
             presentInStaticAnalysis = true;
-            TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ColdAllocation/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+            TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ColdAllocation/Stack/Method"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
             if(trace()) traceMsg(comp(), "Found the static analysis result at the BCI: %d \n", node->getByteCodeIndex());
 
          }
          if(!presentInStaticAnalysis) {
             continue;
          }
-         Candidate *candidate = createCandidateIfValid(node, classInfo,foundUserAnnotation);
-         if (!candidate)
-            continue;
          possibleAllocations++;
          if(trace()) traceMsg(comp(), "Candidate create just using static analysis at the BCI: %d \n", node->getByteCodeIndex());
 
@@ -1960,9 +1960,15 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
             //((candidate->isContiguousAllocation() && !candidate->lockedInNonColdBlock()) ||
             //  (!candidate->isContiguousAllocation() && !candidate->usedInNonColdBlock())))
             {
-            candidate->setLocalAllocation(false);
-             if (trace())
-               traceMsg(comp(), "   Make [%p] non-local because the uses are not in hot enough blocks\n", candidate->_node);
+               if (!checkIfNonEscapingInStaticAnalysis(candidate)) {
+                  candidate->setLocalAllocation(false);
+                  if (trace())
+                     traceMsg(comp(), "   Make [%p] non-local because the uses are not in hot enough blocks\n", candidate->_node);
+
+               } else {
+                  TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ColdAllocation/Stack/Path"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+                  // printf("Static Analysis Suggested Candidate %p is non-escaping (But it is in cold path -- we still go ahead)\n", candidate->_node);
+               }
             }
 
          // If the candidate has more than one value number, and a suspicious
@@ -2259,7 +2265,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
             TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "StackStatistics/StackBytes"), candidate->_treeTop, candidate->_size);
 
             if(candidate->_optimisticallyScalarReplaced || candidate->isNonContiguousAllocation()) {
-               printf("Scalar Replacement in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
+               // printf("Scalar Replacement in %s %d\n",comp()->signature(),candidate->_node->getByteCodeIndex());fflush(stdout);
                if (trace()) traceMsg(comp(), "Scalar Replacement - Bytecode index = %d\n",candidate->_node->getByteCodeIndex());
                makeNonContiguousLocalAllocation(candidate);
                ++nonContiguousAllocations;
@@ -2270,7 +2276,7 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                else
                   makeContiguousLocalAllocation(candidate);
                   if (trace()) traceMsg(comp(), "Stack allocation - Bytecode index = %d with caller index %d (Is Allocated Statically OPT[%d], OPT_INL[%d])\n",candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex(), candidate->_optimisticallyNonEscaping,candidate->_optimisticallyNonEscapinginlining) ;
-                  printf(" --> Stack allocating %d in %s \n",candidate->_node->getByteCodeIndex(), comp()->signature());fflush(stdout);
+                  // printf(" --> Stack allocating %d in %s \n",candidate->_node->getByteCodeIndex(), comp()->signature());fflush(stdout);
 
                }
             else
@@ -2908,9 +2914,27 @@ Candidate *TR_EscapeAnalysis::createCandidateIfValid(TR::Node *node, TR_OpaqueCl
        !TR::Compiler->cls.sameClassLoaders(comp(), classInfo, comp()->getJittedMethodSymbol()->getResolvedMethod()->containingClass()) &&
        !comp()->fej9()->isClassLoadedBySystemClassLoader(classInfo))
       return NULL;
+   
+
+
 
    if (size <= 0)
       {
+         Candidate *tempCandidate = new (trStackMemory()) Candidate(node, _curTree, _curBlock, size, classInfo, comp());
+
+         // Candidate *tempCandidate = new (trStackMemory()) Candidate(node, NULL, NULL, -1, NULL, comp());
+
+   if ((node->getOpCodeValue() == TR::newarray || 
+         node->getOpCodeValue() == TR::anewarray) &&
+        checkIfNonEscapingInStaticAnalysis(tempCandidate))
+    {
+        // Static analysis says it's safe - force allocation
+        TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "Array/StaticAnalysisSuggestedStack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), tempCandidate->_treeTop);
+        if(trace()) 
+         traceMsg(comp(), "   Marked [%p] an array for allocation (code %d, class %p), [Candidate: %d] found in %s \n", node, size, classInfo, tempCandidate->_node->getByteCodeIndex(), comp()->signature());
+
+        size = 1;  // Return positive size
+    }
       if (trace())
          traceMsg(comp(), "   Node [%p] failed: VM can't skip allocation (code %d, class %p)\n", node, size, classInfo);
 
@@ -4635,7 +4659,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
          std::string signature = comp()->compileRelocatableCode() ?
             std::string(((TR_AOTMethodInfo *)ics._methodInfo)->resolvedMethod->signature(comp()->trMemory(), heapAlloc)) :
             std::string(fe()->sampleSignature(ics._methodInfo, 0, 0, comp()->trMemory()));
-         printf("Signature we got: %s \n", signature.c_str());
+         // printf("Signature we got: %s \n", signature.c_str());
          if(trace())
             traceMsg(comp(), "4. [Inline Checking] Signature we got: %s \n", signature.c_str());
          
@@ -4675,7 +4699,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
                   }
                   TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ConditionalInlining/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
 
-                  printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+                  // printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                   candidate->_optimisticallyNonEscapinginlining = true;
                }
             }
@@ -4713,7 +4737,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
                               }
                                  TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "ConditionalInlining/Stack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
 
-                              printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
+                              // printf("Found (BCI %d) inlined from %s to this %s, Marked for conditional stack allocation based on static analysis\n", candidate->_node->getByteCodeIndex(), signature.c_str(), comp()->signature());
                               candidate->_optimisticallyNonEscapinginlining = true;
                            }
                         }   
@@ -4731,7 +4755,7 @@ bool TR_EscapeAnalysis::checkIfNonEscapingInStaticAnalysis(Candidate *candidate)
    }
    if (trace())
       traceMsg(comp(), "Optimistically marking for stack allocation node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
-   printf("==== 1. Optimistically marking for stack allocation node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
+   // printf("==== 1. Optimistically marking for stack allocation node [%p] (BCI %d) based on static analysis with Caller index = %d ==== \n", candidate->_node, candidate->_node->getByteCodeIndex(), candidate->_node->getByteCodeInfo().getCallerIndex());
    candidate->setMustBeContiguousAllocation();
    candidate->_optimisticallyNonEscaping = true;
    return true;
@@ -4889,7 +4913,7 @@ bool TR_EscapeAnalysis::checkIfMarkedForScalarReplacement(Candidate *candidate) 
          if (isNonContiguous) {
             if (trace())
                traceMsg(comp(), "5. Optimistically marking for stack allocation [%p] (BCI %d) to scalars based on static analysis results \n", candidate->_node, candidate->_node->getByteCodeIndex());
-            printf("==== 5. Optimistically marking for stack allocation [%p] (BCI %d) to scalars based on static analysis results ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
+            // printf("==== 5. Optimistically marking for stack allocation [%p] (BCI %d) to scalars based on static analysis results ==== \n", candidate->_node, candidate->_node->getByteCodeIndex());
             candidate->setMustBeNonContiguousAllocation();
             candidate->_optimisticallyScalarReplaced = true;
             return true;   
@@ -6339,7 +6363,7 @@ void TR_EscapeAnalysis::checkEscapeViaCall(TR::Node *node, TR::NodeChecklist& vi
                traceMsg(comp(),
                   "Skipping escape-via-call for [%p] at node [%p]\n",
                   candidate->_node, node);
-            printf("Skipping escape-via-call for [%p] at node [%p]\n", candidate->_node, node);
+            // printf("Skipping escape-via-call for [%p] at node [%p]\n", candidate->_node, node);
             continue;
          }    
          if (usesValueNumber(candidate, nodeVN))

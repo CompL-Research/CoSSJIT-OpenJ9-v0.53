@@ -442,15 +442,15 @@ retry:
 		*--_sp = (UDATA)method;
 		_arg0EA = bp + J9_ROM_METHOD_FROM_RAM_METHOD(method)->argCount;
 		// [AA] Printing interpreting methods
-		J9UTF8 *className = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(method)->romClass);
-		J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(method));
+		// J9UTF8 *className = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(method)->romClass);
+		// J9UTF8 *met`hodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(method));
 		// PORT_ACCESS_FROM_VMC(currentThread);
 		// j9tty_printf(PORTLIB,
 		// "Interpreting: %.*s.%.*s\n",
 		// J9UTF8_LENGTH(className), J9UTF8_DATA(className),
 		// J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName));
 
-		printf("Interpreting: %.*s.%.*s\n", J9UTF8_LENGTH(className), J9UTF8_DATA(className), J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName));
+		// printf("Interpreting: %.*s.%.*s\n", J9UTF8_LENGTH(className), J9UTF8_DATA(className), J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName));
 		return bp;
 	}
 
