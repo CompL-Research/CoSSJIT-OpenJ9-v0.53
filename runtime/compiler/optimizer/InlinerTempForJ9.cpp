@@ -2901,7 +2901,7 @@ TR_J9InlinerPolicy::isInlineableJNI(TR_ResolvedMethod *method,TR::Node *callNode
    return false;
    }
 
-//    bool
+// static bool
 // TR_J9InlinerPolicy::isMarkedbyStaticAnalysis(TR_ResolvedMethod *method,TR::Node *callNode)
 //    {
 //       heuristicTrace(tracer(),"Checking results in isTargetSuggestedByStaticAnalysis for static analysis suggestions for weight increase \n");
@@ -5206,6 +5206,9 @@ TR_MultipleCallTargetInliner::exceedsSizeThreshold(TR_CallSite *callSite, int by
 
             }
          }
+      // else if(isMarkedbyStaticAnalysis(calleeResolvedMethod, callNode) ) {
+      //    return false;
+      // } 
       else
          heuristicTrace(tracer(),"### Exceeds Size Threshold because  bytecodeSize %d > _methodInWarmBlockByteCodeSizeThreshold %d",bytecodeSize,_methodInWarmBlockByteCodeSizeThreshold);
 

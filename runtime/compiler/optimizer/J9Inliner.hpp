@@ -198,7 +198,7 @@ class TR_J9InlinerPolicy : public OMR_InlinerPolicy
       bool isInlineableJNI(TR_ResolvedMethod *method,TR::Node *callNode);
       
       //[AA] Added for Static Analysis based inlining. The idea is enrich the heuritics for inlining based on the static escape analysis results.
-      bool isMarkedbyStaticAnalysis(TR_ResolvedMethod *method, TR::Node *callNode);
+      static bool isMarkedbyStaticAnalysis(TR_ResolvedMethod *method, TR::Node *callNode);
       
       virtual bool alwaysWorthInlining(TR_ResolvedMethod * calleeMethod, TR::Node *callNode);
       bool adjustFanInSizeInExceedsSizeThreshold(int bytecodeSize,

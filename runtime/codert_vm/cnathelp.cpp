@@ -3982,7 +3982,7 @@ old_slow_jitHeapifyStackObject(J9VMThread *currentThread)
 	J9Method *currentMethod = walkState->method;
 	J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
 	J9UTF8 *methodSig = J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
-	printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
+	// printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
 	fflush(stdout);
 	// JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, (j9object_t)-1, srcAddress));
 	
@@ -4016,7 +4016,7 @@ old_slow_jitHeapifyStackObjectIfRequired(J9VMThread *currentThread)
 	J9Method *currentMethod = walkState->method;
 	J9UTF8 *methodName = J9ROMMETHOD_NAME(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
 	J9UTF8 *methodSig = J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod));
-	printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
+	// printf("Doing Heapification in method: %.*s%.*s\n", J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName), J9UTF8_LENGTH(methodSig), J9UTF8_DATA(methodSig));
 	fflush(stdout);
 
 	// JIT_RETURN_UDATA(VM_VMHelpers::heapifyObjectIfRequired(currentThread, destAddress, srcAddress));

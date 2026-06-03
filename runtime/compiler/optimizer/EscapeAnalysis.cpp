@@ -2374,6 +2374,10 @@ int32_t TR_EscapeAnalysis::performAnalysisOnce()
                TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/Optimistic"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
             else
                TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/NonOptimistic"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+            
+            if(candidate->_optimisticallyNonEscaping && (candidate->_node->getOpCodeValue() == TR::newarray || candidate->_node->getOpCodeValue() == TR::anewarray)) {
+               TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "AllocationStatistics/Stack/Optimistic/Array"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), candidate->_treeTop);
+            }
 
             if (candidate->_seenFieldStore)
                _repeatAnalysis = true;
@@ -2917,27 +2921,32 @@ Candidate *TR_EscapeAnalysis::createCandidateIfValid(TR::Node *node, TR_OpaqueCl
    
 
 
-
    if (size <= 0)
       {
-         Candidate *tempCandidate = new (trStackMemory()) Candidate(node, _curTree, _curBlock, size, classInfo, comp());
-
-         // Candidate *tempCandidate = new (trStackMemory()) Candidate(node, NULL, NULL, -1, NULL, comp());
-
-   if ((node->getOpCodeValue() == TR::newarray || 
-         node->getOpCodeValue() == TR::anewarray) &&
-        checkIfNonEscapingInStaticAnalysis(tempCandidate))
-    {
-        // Static analysis says it's safe - force allocation
-        TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "Array/StaticAnalysisSuggestedStack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), tempCandidate->_treeTop);
-        if(trace()) 
-         traceMsg(comp(), "   Marked [%p] an array for allocation (code %d, class %p), [Candidate: %d] found in %s \n", node, size, classInfo, tempCandidate->_node->getByteCodeIndex(), comp()->signature());
-
-        size = 1;  // Return positive size
-    }
       if (trace())
          traceMsg(comp(), "   Node [%p] failed: VM can't skip allocation (code %d, class %p)\n", node, size, classInfo);
+      
+      // Candidate *tempCandidate = new (trStackMemory()) Candidate(node, _curTree, _curBlock, size, classInfo, comp());
+      // Candidate *tempCandidate = new (trStackMemory()) Candidate(node, NULL, NULL, -1, NULL, comp());
 
+      // if ((node->getOpCodeValue() == TR::newarray || 
+      //    node->getOpCodeValue() == TR::anewarray) &&
+      //   checkIfNonEscapingInStaticAnalysis(tempCandidate))
+      // {
+      //       // Static analysis says it's safe - force allocation
+      //       TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "Array/StaticAnalysisSuggestedStack"/*, allocationMethodSignature, candidate->_node->getByteCodeIndex()*/), tempCandidate->_treeTop);
+      //       if(trace()) 
+      //          traceMsg(comp(), "   Marked [%p] an array for allocation (code %d, class %p), [Candidate: %d] found in %s \n", node, size, classInfo, tempCandidate->_node->getByteCodeIndex(), comp()->signature());
+            
+      //       // printf("Marked [%p] an array for allocation (code %d, class %p), [Candidate: %d] found in %s \n", node, size, classInfo, tempCandidate->_node->getByteCodeIndex(), comp()->signature());
+      //       size = 1;  // Return positive size
+
+      //       Candidate *result = NULL;
+      //       result = new (trStackMemory()) Candidate(node, _curTree, _curBlock, size, classInfo, comp());
+      //       result->setProfileOnly(profileOnly);
+
+      //       return result;
+      // }
       if (  size == 0
          && classInfo
          && (manager()->numPassesCompleted() == 0)

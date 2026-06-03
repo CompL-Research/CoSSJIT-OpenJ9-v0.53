@@ -961,108 +961,108 @@ J9::Options::eaResfileOption(const char *option, void *base, TR::OptionTable *en
       }
       num_entries++;
    }
-   printf("Read %d entries \n", num_entries);
+   // printf("Read %d entries \n", num_entries);
 
    // Print the values stored in the map
-   for (const auto& entry : _staticAnalysisNonEscapingMap) {
-      const std::string& signature = entry.first;
-      const std::vector<int32_t>& firstPart = entry.second.first;
-      const auto& secondPart = entry.second.second.first;
-      const auto& thirdPart = entry.second.second.second.first.first;
-      const auto& fourthPart = entry.second.second.second.first.second;
-      const auto& fifthPart = entry.second.second.second.second;
+   // for (const auto& entry : _staticAnalysisNonEscapingMap) {
+   //    const std::string& signature = entry.first;
+   //    const std::vector<int32_t>& firstPart = entry.second.first;
+   //    const auto& secondPart = entry.second.second.first;
+   //    const auto& thirdPart = entry.second.second.second.first.first;
+   //    const auto& fourthPart = entry.second.second.second.first.second;
+   //    const auto& fifthPart = entry.second.second.second.second;
 
-      printf("Method Name: %s\n", signature.c_str());
-      printf("  1. Direct Stack Allocation: [");
-      for (size_t i = 0; i < firstPart.size(); ++i) {
-         printf("%d", firstPart[i]);
-         if (i < firstPart.size() - 1) printf(", ");
-      }
-      printf("]\n");
+   //    printf("Method Name: %s\n", signature.c_str());
+   //    printf("  1. Direct Stack Allocation: [");
+   //    for (size_t i = 0; i < firstPart.size(); ++i) {
+   //       printf("%d", firstPart[i]);
+   //       if (i < firstPart.size() - 1) printf(", ");
+   //    }
+   //    printf("]\n");
 
 
-      // Second part iteration
-      for (const auto& secondEntry : secondPart) {
-         int number = secondEntry.first;
-         const std::vector<std::pair<std::vector<std::string>, std::vector<int32_t>>>& entryPairs = secondEntry.second;
-         printf("  2. Based of Speculation: \n");
-         printf("    Invocation BCI: %d\n", number);
-         for (const auto& methodEntry : entryPairs) {
-            const std::vector<std::string>& stringList = methodEntry.first;
-            const std::vector<int32_t>& indices = methodEntry.second;
+   //    // Second part iteration
+   //    for (const auto& secondEntry : secondPart) {
+   //       int number = secondEntry.first;
+   //       const std::vector<std::pair<std::vector<std::string>, std::vector<int32_t>>>& entryPairs = secondEntry.second;
+   //       printf("  2. Based of Speculation: \n");
+   //       printf("    Invocation BCI: %d\n", number);
+   //       for (const auto& methodEntry : entryPairs) {
+   //          const std::vector<std::string>& stringList = methodEntry.first;
+   //          const std::vector<int32_t>& indices = methodEntry.second;
 
-            printf("    TYPES: {");
-            for (size_t i = 0; i < stringList.size(); ++i) {
-               printf("%s", stringList[i].c_str());
-               if (i < stringList.size() - 1) printf(", ");
-            }
-            printf("}\n");
+   //          printf("    TYPES: {");
+   //          for (size_t i = 0; i < stringList.size(); ++i) {
+   //             printf("%s", stringList[i].c_str());
+   //             if (i < stringList.size() - 1) printf(", ");
+   //          }
+   //          printf("}\n");
 
-            printf("    BCI STACK ALLOCATION: [");
-            for (size_t i = 0; i < indices.size(); ++i) {
-               printf("%d", indices[i]);
-               if (i < indices.size() - 1) printf(", ");
-            }
-            printf("]\n");
-         }
-      }
+   //          printf("    BCI STACK ALLOCATION: [");
+   //          for (size_t i = 0; i < indices.size(); ++i) {
+   //             printf("%d", indices[i]);
+   //             if (i < indices.size() - 1) printf(", ");
+   //          }
+   //          printf("]\n");
+   //       }
+   //    }
 
-      // Third part iteration
-      for (const auto& thirdEntry : thirdPart) {
-         int number = thirdEntry.first;
-         const auto& inliningResults = thirdEntry.second;
+   //    // Third part iteration
+   //    for (const auto& thirdEntry : thirdPart) {
+   //       int number = thirdEntry.first;
+   //       const auto& inliningResults = thirdEntry.second;
 
-         printf("  3. Inline Result at BCI: %d\n", number);
-         for (const auto& methodEntry : inliningResults) {
-            const std::string& methodName = methodEntry.first;
-            const std::vector<int32_t>& indices = methodEntry.second;
+   //       printf("  3. Inline Result at BCI: %d\n", number);
+   //       for (const auto& methodEntry : inliningResults) {
+   //          const std::string& methodName = methodEntry.first;
+   //          const std::vector<int32_t>& indices = methodEntry.second;
 
-            printf("    Method: %s\n", methodName.c_str());
-            printf("    STACK ALLOCATABLE BCI: {");
-            for (size_t i = 0; i < indices.size(); ++i) {
-               printf("%d", indices[i]);
-               if (i < indices.size() - 1) printf(", ");
-            }
-            printf("}\n");
-         }
-      }
+   //          printf("    Method: %s\n", methodName.c_str());
+   //          printf("    STACK ALLOCATABLE BCI: {");
+   //          for (size_t i = 0; i < indices.size(); ++i) {
+   //             printf("%d", indices[i]);
+   //             if (i < indices.size() - 1) printf(", ");
+   //          }
+   //          printf("}\n");
+   //       }
+   //    }
 
-      // Print fourth part
-      // printf(fourthPart.size() > 0 ? "  4. Branching Results: \n" : "");
-      for (const auto& tuple : fourthPart) {
-         const std::vector<int32_t>& firstVector = std::get<0>(tuple);
-         const std::string& stringValue = std::get<1>(tuple);
-         const std::vector<int32_t>& secondVector = std::get<2>(tuple);
+   //    // Print fourth part
+   //    // printf(fourthPart.size() > 0 ? "  4. Branching Results: \n" : "");
+   //    for (const auto& tuple : fourthPart) {
+   //       const std::vector<int32_t>& firstVector = std::get<0>(tuple);
+   //       const std::string& stringValue = std::get<1>(tuple);
+   //       const std::vector<int32_t>& secondVector = std::get<2>(tuple);
 
-         printf("  4. Branching Results: \n");
-         printf("    BCI: [");
-         for (size_t i = 0; i < firstVector.size(); ++i) {
-            printf("%d", firstVector[i]);
-            if (i < firstVector.size() - 1) printf(", ");
-         }
-         printf("]\n");
+   //       printf("  4. Branching Results: \n");
+   //       printf("    BCI: [");
+   //       for (size_t i = 0; i < firstVector.size(); ++i) {
+   //          printf("%d", firstVector[i]);
+   //          if (i < firstVector.size() - 1) printf(", ");
+   //       }
+   //       printf("]\n");
 
-         printf("    Type: %s\n", stringValue.c_str());
+   //       printf("    Type: %s\n", stringValue.c_str());
 
-         printf("    BCI: [");
-         for (size_t i = 0; i < secondVector.size(); ++i) {
-            printf("%d", secondVector[i]);
-            if (i < secondVector.size() - 1) printf(", ");
-         }
-         printf("]\n");
-      }
-      // ----- 5. Fifth Part -----
-      if (!fifthPart.empty()) {
-         printf("  5. Scalar Replacement Data: [");
-         for (size_t i = 0; i < fifthPart.size(); ++i) {
-               printf("%d", fifthPart[i]);
-               if (i < fifthPart.size() - 1) printf(", ");
-         }
-         printf("]\n");
-      }
-      printf("-------------------------------------------------------------\n");
-   }
-   printf("=====================================================================================\n");
+   //       printf("    BCI: [");
+   //       for (size_t i = 0; i < secondVector.size(); ++i) {
+   //          printf("%d", secondVector[i]);
+   //          if (i < secondVector.size() - 1) printf(", ");
+   //       }
+   //       printf("]\n");
+   //    }
+   //    // ----- 5. Fifth Part -----
+   //    if (!fifthPart.empty()) {
+   //       printf("  5. Scalar Replacement Data: [");
+   //       for (size_t i = 0; i < fifthPart.size(); ++i) {
+   //             printf("%d", fifthPart[i]);
+   //             if (i < fifthPart.size() - 1) printf(", ");
+   //       }
+   //       printf("]\n");
+   //    }
+   //    printf("-------------------------------------------------------------\n");
+   // }
+   // printf("=====================================================================================\n");
    return endOpt;
 }
 

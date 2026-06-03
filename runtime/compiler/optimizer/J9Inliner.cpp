@@ -1267,7 +1267,10 @@ void TR_ProfileableCallSite::findSingleProfiledReceiver(ListIterator<TR_ExtraAdd
          if (targetMethod) {
             TR_VirtualGuardSelection *guard = NULL;
             guard = new (comp()->trHeapMemory()) TR_VirtualGuardSelection(TR_ProfiledGuard, TR_VftTest, staticCandidate.bestClass);
-            //printf(" ==> Creating a profiled call. callee Symbol %p frequencyadjustment %d",_initialCalleeSymbol, staticCandidate.frequency);
+            //printf(" ==> Creating a profiled call. callee Symbol %p frequencyadjustment %d\n",_initialCalleeSymbol, staticCandidate.frequency); 
+            //printf("Current method is %s\n", _callerResolvedMethod->signature(comp()->trMemory(), stackAlloc));
+            //printf(" Receiver class is %p\n", staticCandidate.bestClass);
+            //printf(" Method name is %s\n", targetMethod->signature(comp()->trMemory(), stackAlloc));  
             heuristicTrace(inliner->tracer()," ==> Creating a profiled call. callee Symbol %p frequencyadjustment %f",_initialCalleeSymbol, staticCandidate.frequency);
             addTarget(comp()->trMemory(),inliner,guard,targetMethod,staticCandidate.bestClass,heapAlloc,staticCandidate.frequency);
          } else {
